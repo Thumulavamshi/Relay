@@ -20,7 +20,7 @@ import asyncio
 import logging
 import re
 
-from . import classifier, db, extraction
+from . import classifier, db, extraction, integrations
 from .config import settings
 from .actions import dispatch
 
@@ -85,6 +85,10 @@ async def on_turn(call_id, role, text, seq):
                                 "sending now to make the claim true", call_id)
             return  # only the lead's words carry facts to extract
 
+        # A lead asking for a person, disputing, or in distress pages the team
+        # before any model call - it is a rule, not a judgement.
+        integrations.on_lead_turn(call_id, text, seq)
+
         # Extraction runs CONCURRENTLY with classification rather than before it.
         # Serially they would cost the sum of two ~4s model calls before the
         # mid-call action could fire, on a row that is scored on timing.
@@ -93,6 +97,7 @@ async def on_turn(call_id, role, text, seq):
         # whole life - asyncio keeps only a weak one, and a dropped task here
         # would look exactly like extraction silently not working.
         extracting = asyncio.create_task(extract_slots(call_id, at_turn_seq=seq))
+        written = 0
         try:
             await classify(call_id, seq)
             # Fired before awaiting extraction on purpose. When the rules
@@ -100,8 +105,13 @@ async def on_turn(call_id, role, text, seq):
             # should go now; waiting on a model call we do not need would hand
             # back the exact latency the fast path exists to avoid.
             await maybe_fire_mid_call_action(call_id, seq)
+            # CRM stage and the Slack alert follow the read, on the same timing.
+            integrations.on_classified(call_id)
         finally:
-            await extracting
+            written = await extracting
+        if written:
+            # New facts belong in the team's live Slack message - an edit, never a post.
+            await asyncio.to_thread(integrations.refresh_team_alert, call_id)
     except Exception:
         # A broken understanding lane must never take the call down with it.
         log.exception("understanding lane failed on call %s turn %s", call_id, seq)
@@ -125,7 +135,13 @@ async def on_call_ended(call_id):
         turns = db.get_turns(call_id)
         lead_turns = [t for t in turns if t["role"] == "user"]
         lead_words = sum(len(t["text"].split()) for t in lead_turns)
-        if len(lead_turns) < MIN_LEAD_TURNS or lead_words < MIN_FOLLOWUP_WORDS:
+        conversation = (len(lead_turns) >= MIN_LEAD_TURNS
+                        and lead_words >= MIN_FOLLOWUP_WORDS)
+        # The team's apps hear about every real conversation, and Slack closes
+        # out any call it already announced. Deliberately before the guard
+        # below, which is about messaging the lead, not about our own records.
+        integrations.on_call_ended(call_id, conversation)
+        if not conversation:
             log.info("call %s had %d lead turn(s) / %d words - no conversation to "
                      "follow up on, skipping the post-call messages",
                      call_id, len(lead_turns), lead_words)

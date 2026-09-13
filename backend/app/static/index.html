@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relay</title>
+<link rel="icon" href="data:,">
+<style>
+:root{
+  --bg:#0a0b0e; --panel:#111318; --panel2:#161920; --line:#22262f;
+  --text:#e8e9ed; --dim:#9096a3; --faint:#646a76;
+  --accent:#8aa4ff; --hot:#ff6a55; --warm:#f2b134; --cold:#56b4ff;
+  --ok:#3ecf8e; --bad:#ff6b6b; --pend:#e9c46a;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+.dim{color:var(--dim)} .faint{color:var(--faint)}
+header.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:1.5rem;
+  padding:.7rem 1.25rem;background:rgba(10,11,14,.92);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line)}
+.brand{font-weight:650;display:flex;align-items:center;gap:.55rem;white-space:nowrap}
+.brand .mark{width:.65rem;height:.65rem;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 4px rgba(138,164,255,.18)}
+nav{display:flex;gap:.2rem;overflow-x:auto}
+nav a{color:var(--dim);padding:.35rem .7rem;border-radius:.45rem;white-space:nowrap}
+nav a.on{color:var(--text);background:var(--panel2)}
+nav a:hover{text-decoration:none;color:var(--text)}
+.dots{margin-left:auto;display:flex;gap:.9rem;font-size:.8rem;color:var(--dim);white-space:nowrap}
+.dot{display:inline-block;width:.5rem;height:.5rem;border-radius:50%;background:var(--faint);
+  margin-right:.35rem;vertical-align:.05rem}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+main{max-width:76rem;margin:0 auto;padding:1.25rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:.8rem;
+  padding:1rem 1.1rem;margin-bottom:1rem}
+.card h2{font-size:.76rem;font-weight:650;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--dim);margin:0 0 .75rem}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:1rem}
+.grid2>.card{margin-bottom:0}
+.stack{display:grid;gap:1rem;margin-bottom:1rem}
+.detail{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:880px){.detail{grid-template-columns:1fr} .dots{display:none}}
+.hero h1{font-size:1.55rem;line-height:1.25;margin:.4rem 0 .45rem;font-weight:650;
+  letter-spacing:-.01em;max-width:46rem}
+.hero p{max-width:48rem;margin:0 0 1.25rem}
+button{font:inherit;font-weight:600;color:var(--text);background:var(--panel2);
+  border:1px solid var(--line);border-radius:.55rem;padding:.6rem 1rem;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#0a0b0e}
+button:disabled{opacity:.45;cursor:default}
+.state{margin-top:.7rem;font-size:.85rem;color:var(--dim);min-height:1.2em}
+.pill{display:inline-block;padding:.03rem .55rem;border-radius:999px;font-size:.74rem;
+  font-weight:650;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.hot{color:#fff;background:rgba(255,106,85,.2);border-color:rgba(255,106,85,.55)}
+.pill.warm{color:#fff;background:rgba(242,177,52,.18);border-color:rgba(242,177,52,.55)}
+.pill.cold{color:#fff;background:rgba(86,180,255,.16);border-color:rgba(86,180,255,.5)}
+.pill.flag{color:#ffc4c4;border-color:rgba(255,107,107,.5)}
+.pill.live{color:var(--ok);border-color:rgba(62,207,142,.5)}
+.badge{display:inline-block;font-size:.76rem;margin-right:.65rem;white-space:nowrap}
+.s-sent{color:var(--ok)} .s-failed{color:var(--bad)} .s-sending,.s-pending{color:var(--pend)}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-size:.7rem;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);text-align:left;
+  font-weight:600;padding:.4rem .6rem;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:.55rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+tr.click{cursor:pointer} tr.click:hover td{background:var(--panel2)}
+.turns{display:flex;flex-direction:column;gap:.55rem;max-height:36rem;overflow-y:auto;padding-right:.3rem}
+.turn{display:grid;grid-template-columns:3.4rem 1fr;gap:.6rem}
+.turn .who{font-size:.68rem;font-weight:700;letter-spacing:.05em;padding-top:.18rem}
+.turn.agent .who{color:var(--accent)} .turn.lead .who{color:var(--ok)}
+.kv{display:grid;grid-template-columns:6.5rem 1fr;gap:.4rem .8rem}
+.kv .k{color:var(--dim)}
+.quote{color:var(--dim);font-style:italic}
+.apps{display:grid;gap:.55rem}
+.app{display:grid;grid-template-columns:6.2rem 1fr;gap:.8rem;padding:.6rem .7rem;
+  border:1px solid var(--line);border-radius:.55rem;background:var(--panel2)}
+.app .name{font-weight:650}
+.ledger{display:grid;gap:.4rem;font-size:.84rem}
+.ledger .item{display:grid;grid-template-columns:6.2rem 1fr auto;gap:.6rem}
+.banner{border:1px solid rgba(255,107,107,.5);background:rgba(255,107,107,.1);color:#ffdada;
+  padding:.7rem .9rem;border-radius:.6rem;margin-bottom:1rem}
+.banner.warn{border-color:rgba(233,196,106,.5);background:rgba(233,196,106,.1);color:#fbeabf}
+.big{font-size:2.5rem;font-weight:700;letter-spacing:-.02em;line-height:1.1}
+.timeline{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;margin-top:.5rem}
+.mark-ok{color:var(--ok);font-weight:700} .mark-bad{color:var(--bad);font-weight:700}
+code{font:.8rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#c7cdfc}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark"></span>Relay <span class="faint" style="font-weight:400">voice sales agent</span></div>
+  <nav>
+    <a href="#/" data-tab="start">Start</a>
+    <a href="#/calls" data-tab="calls">Calls</a>
+    <a href="#/integrations" data-tab="integrations">Integrations</a>
+    <a href="#/evidence" data-tab="evidence">Evidence</a>
+  </nav>
+  <div id="appdots" class="dots"></div>
+</header>
+<main id="view"></main>
+
+<script type="module">
+const view = document.getElementById('view');
+const $ = sel => document.querySelector(sel);
+const esc = s => String(s ?? '').replace(/[&<>"']/g,
+  c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || `${r.status} ${r.statusText}`);
+  return d;
+}
+
+const TZ = {timeZone: 'Asia/Kolkata'};
+const when = iso => iso ? new Date(iso).toLocaleString('en-IN',
+  {...TZ, day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit'}) : '';
+const clock = iso => iso ? new Date(iso).toLocaleTimeString('en-IN',
+  {...TZ, hour: 'numeric', minute: '2-digit', second: '2-digit'}) : '';
+const dur = s => s == null ? '' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const pill = label => label ? `<span class="pill ${esc(label)}">${esc(label)}</span>`
+                            : '<span class="pill">reading…</span>';
+const link = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+const statusText = s => s ? `<span class="s-${esc(s)}">${esc(s)}</span>` : '<span class="faint">waiting</span>';
+
+const APPS = [['calendar', 'Calendar'], ['hubspot', 'HubSpot'], ['slack', 'Slack'], ['whatsapp', 'WhatsApp']];
+const MARK = {sent: '✓', failed: '✕', sending: '…', pending: '…'};
+const FLAG = {suspected_no_audio: 'no caller audio', ringing_silently: 'silent ring?', escalation: 'needs a human'};
+
+// ---------------------------------------------------------------- routing
+
+let timer = null;
+function every(ms, fn) {
+  clearInterval(timer);
+  const tick = () => fn().catch(e => console.warn(e));
+  tick();
+  timer = setInterval(tick, ms);
+}
+
+function route() {
+  clearInterval(timer);
+  timer = null;
+  const [page = '', arg] = location.hash.replace(/^#\/?/, '').split('/');
+  const tab = ['call', 'provider'].includes(page) ? 'calls' : (page || 'start');
+  document.querySelectorAll('nav a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+  window.scrollTo(0, 0);
+  const pages = {start: startPage, calls: callsPage, call: () => callPage(arg),
+                 provider: () => providerPage(arg), integrations: integrationsPage,
+                 evidence: evidencePage};
+  (pages[page || 'start'] || startPage)();
+}
+window.addEventListener('hashchange', route);
+
+async function dots() {
+  // The LIVE check, not just "configured": a token Google has revoked is
+  // configured and still broken, and a green dot there would be a lie.
+  try {
+    const d = await api('/api/integrations');
+    const ints = d.status || {};
+    const apps = [['google_calendar', 'Calendar'], ['hubspot', 'HubSpot'], ['slack', 'Slack']].map(([k, name]) => {
+      const live = (d.apps || {})[k] || {};
+      const cls = !(ints[k] || {}).configured ? '' : (live.ok ? 'ok' : 'bad');
+      return `<span title="${esc(live.detail || '')}"><i class="dot ${cls}"></i>${name}</span>`;
+    });
+    const m = ints.understanding_model;
+    if (m) apps.push(`<span title="${esc(m.detail)}"><i class="dot ${m.ready ? 'ok' : 'bad'}"></i>${esc(m.provider)}</span>`);
+    $('#appdots').innerHTML = apps.join('');
+  } catch (e) {
+    $('#appdots').textContent = 'backend unreachable';
+  }
+}
+
+// ---------------------------------------------------------------- start
+
+async function startPage() {
+  view.innerHTML = `
+    <section class="hero">
+      <h1>An AI agent that sells on the phone — and does the follow-up work while the call is still live.</h1>
+      <p class="dim">It talks to the lead in English, Hindi or Telugu and reads how serious they are.
+        It checks the rep's Google Calendar before booking a callback, updates HubSpot and alerts the team in Slack,
+        each action exactly once.</p>
+    </section>
+    <div class="grid2" style="margin-bottom:1rem">
+      <div class="card"><h2>Web call</h2>
+        <p class="dim">Talk to the agent from this browser. Same assistant, same tools, no phone line.</p>
+        <button id="webbtn" class="primary">Start web call</button><div id="webstate" class="state"></div></div>
+      <div class="card"><h2>Phone call</h2>
+        <p class="dim">The agent rings the one configured number. The endpoint takes no number, so it cannot dial anyone else.</p>
+        <button id="phonebtn">Call the lead</button><div id="phonestate" class="state"></div></div>
+    </div>
+    <div class="card"><div class="row"><h2>Latest call</h2><a href="#/calls">All calls →</a></div>
+      <div id="latest" class="dim">loading…</div></div>`;
+
+  let cfg = {};
+  try { cfg = await api('/api/config'); } catch (e) { $('#phonestate').textContent = e.message; }
+  const phone = $('#phonebtn');
+  if (!phone) return;
+  if (cfg.destination_masked) phone.textContent = `Call ${cfg.destination_masked}`;
+  if (!cfg.can_place_calls) {
+    phone.disabled = true;
+    $('#phonestate').textContent = cfg.missing && cfg.missing.length ? `Not configured: ${cfg.missing.join(', ')}` : '';
+  }
+  phone.onclick = async () => {
+    phone.disabled = true;
+    $('#phonestate').textContent = 'Placing the call…';
+    try {
+      const d = await api('/calls', {method: 'POST'});
+      $('#phonestate').innerHTML = `Ringing — <a href="#/call/${esc(d.call_id)}">open the live call view</a>`;
+    } catch (e) {
+      $('#phonestate').textContent = `Could not place the call: ${e.message}`;
+      phone.disabled = false;
+    }
+  };
+  setupWebCall(cfg);
+  every(4000, renderLatest);
+}
+
+async function renderLatest() {
+  const d = await api('/api/calls?limit=1');
+  const el = $('#latest');
+  if (!el) return;
+  if (!d.calls.length) { el.textContent = 'No calls yet.'; return; }
+  el.innerHTML = `<div class="tablewrap"><table><tbody>${d.calls.map(callRow).join('')}</tbody></table></div>`;
+  bindRows(el);
+}
+
+let vapi = null, webLive = false;
+function setupWebCall(cfg) {
+  const btn = $('#webbtn'), state = $('#webstate');
+  if (!btn) return;
+  if (!cfg.vapi_public_key || !cfg.assistant_id) {
+    btn.disabled = true;
+    state.innerHTML = 'Set <code>VAPI_PUBLIC_KEY</code> in .env to enable browser calls.';
+    return;
+  }
+  if (webLive) { btn.textContent = 'End web call'; state.textContent = 'Live — speak now.'; }
+  btn.onclick = async () => {
+    if (webLive && vapi) { vapi.stop(); return; }
+    btn.disabled = true;
+    state.textContent = 'Connecting… allow the microphone when asked.';
+    try {
+      if (!vapi) {
+        const {default: Vapi} = await import('https://esm.sh/@vapi-ai/web');
+        vapi = new Vapi(cfg.vapi_public_key);
+        vapi.on('call-start', () => {
+          webLive = true;
+          const b = $('#webbtn'); if (b) { b.disabled = false; b.textContent = 'End web call'; }
+        });
+        vapi.on('call-end', () => {
+          webLive = false;
+          const b = $('#webbtn'); if (b) { b.disabled = false; b.textContent = 'Start web call'; }
+          const s = $('#webstate'); if (s) s.textContent = 'Call ended.';
+        });
+        vapi.on('error', e => {
+          const s = $('#webstate');
+          if (s) s.textContent = `Error: ${String(e?.error?.message || e?.errorMsg || e?.message || JSON.stringify(e)).slice(0, 200)}`;
+          const b = $('#webbtn'); if (b) b.disabled = false;
+        });
+      }
+      const call = await vapi.start(cfg.assistant_id);
+      const s = $('#webstate');
+      if (s && call && call.id) s.innerHTML = `Live — <a href="#/provider/${esc(call.id)}">open the live call view</a>`;
+    } catch (e) {
+      state.textContent = `Could not start: ${e.message}`;
+      btn.disabled = false;
+    }
+  };
+}
+
+function providerPage(providerId) {
+  view.innerHTML = `<div class="card"><h2>Connecting</h2><p class="dim">Waiting for the first event from the call…</p></div>`;
+  every(1500, async () => {
+    const d = await api(`/api/calls/by-provider/${encodeURIComponent(providerId)}`);
+    if (d.call_id) location.hash = `#/call/${d.call_id}`;
+  });
+}
+
+// ---------------------------------------------------------------- calls
+
+function callRow(c) {
+  const lead = c.who || c.products || c.destination_masked || '—';
+  const apps = APPS.map(([k, name]) => c.apps[k]
+    ? `<span class="badge s-${esc(c.apps[k])}">${MARK[c.apps[k]] || ''} ${name}</span>` : '').join('');
+  const flags = (c.flags || []).map(f => `<span class="pill flag">${esc(FLAG[f] || f)}</span>`).join(' ');
+  return `<tr class="click" data-id="${esc(c.id)}">
+    <td>${when(c.created_at)}<div class="faint">${esc(c.status)}</div></td>
+    <td>${dur(c.duration_s)}</td>
+    <td>${esc(lead)}${c.who && c.products ? `<div class="faint">${esc(c.products)}</div>` : ''}</td>
+    <td>${pill(c.label)}</td>
+    <td>${apps || '<span class="faint">—</span>'}</td>
+    <td>${flags}${c.callback_when ? `<div class="faint">callback ${esc(c.callback_when)}</div>` : ''}</td></tr>`;
+}
+
+function bindRows(root) {
+  root.querySelectorAll('tr.click').forEach(tr => { tr.onclick = () => { location.hash = `#/call/${tr.dataset.id}`; }; });
+}
+
+function callsPage() {
+  view.innerHTML = `<div class="card"><div class="row"><h2>Calls</h2><span class="faint">refreshes every 5 s</span></div>
+    <div class="tablewrap"><table><thead><tr><th>When · IST</th><th>Length</th><th>Lead</th><th>Intent</th>
+      <th>Actions</th><th>Flags · callback</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="dim">loading…</td></tr></tbody></table></div></div>`;
+  every(5000, async () => {
+    const d = await api('/api/calls?limit=50');
+    const body = $('#rows');
+    if (!body) return;
+    body.innerHTML = d.calls.map(callRow).join('') || '<tr><td colspan="6" class="dim">No calls yet.</td></tr>';
+    bindRows(body);
+  });
+}
+
+// ---------------------------------------------------------------- call detail
+
+const AVAILABILITY = {
+  free: 'the slot was free on the calendar',
+  busy_confirmed: 'the slot was taken — booked because they insisted',
+  unchecked: 'the calendar did not answer in time — booked unchecked',
+  not_configured: 'calendar not connected',
+};
+
+function appsHtml(d) {
+  const c = d.call, L = d.links;
+  const cb = [...d.callbacks].reverse().find(r => ['pending', 'claimed', 'placed'].includes(r.status));
+  let cal = '<span class="faint">no callback booked</span>';
+  if (cb) {
+    cal = `${esc(d.callback_when || '')}${L.calendar ? ` · ${link(L.calendar, 'event')}` : ''}
+      <div class="faint">${esc(AVAILABILITY[cb.availability] || '')}</div>`;
+  }
+  const taken = d.calendar_checks.filter(k => k.status === 'busy').length;
+  if (taken) cal += `<div class="faint">${taken} taken slot${taken > 1 ? 's' : ''} refused, next free slot offered</div>`;
+
+  const hub = [L.hubspot_deal && `${link(L.hubspot_deal, 'deal')}${d.deal_stage ? ` <span class="dim">(${esc(d.deal_stage)} stage)</span>` : ''}`,
+               L.hubspot_contact && link(L.hubspot_contact, 'contact')].filter(Boolean).join(' · ')
+            || '<span class="faint">no record yet</span>';
+  const slack = c.slack_ts
+    ? `one message, edited as the call moves${L.slack_channel ? ` · ${link(L.slack_channel, 'channel')}` : ''}`
+    : '<span class="faint">not posted</span>';
+
+  const hot = d.actions.find(a => a.type === 'whatsapp_hot');
+  let wa = '<span class="faint">no mid-call message</span>';
+  if (hot) {
+    wa = `mid-call message ${statusText(hot.status)} <span class="faint">${clock(hot.sent_at || hot.requested_at)}</span>`;
+    if (hot.sent_at && c.ended_at && new Date(hot.sent_at) < new Date(c.ended_at)) {
+      const s = Math.round((new Date(c.ended_at) - new Date(hot.sent_at)) / 1000);
+      wa += `<div class="s-sent">delivered ${dur(s)} before hang-up</div>`;
+    }
+  }
+  return [['Calendar', d.apps.calendar, cal], ['HubSpot', d.apps.hubspot, hub],
+          ['Slack', d.apps.slack, slack], ['WhatsApp', d.apps.whatsapp, wa]]
+    .map(([name, s, body]) => `<div class="app"><div><div class="name">${name}</div>
+      <div style="font-size:.8rem">${statusText(s)}</div></div><div>${body}</div></div>`).join('');
+}
+
+function callPage(id) {
+  view.innerHTML = `<div id="banner"></div>
+    <div class="card"><div id="head" class="dim">loading…</div></div>
+    <div class="detail">
+      <div class="card"><div class="row"><h2>Transcript</h2><span id="tcount" class="faint"></span></div>
+        <div id="turns" class="turns"></div></div>
+      <div>
+        <div class="card"><h2>Intent</h2><div id="intent"></div></div>
+        <div class="card"><h2>In the team's apps</h2><div id="apps" class="apps"></div></div>
+        <div class="card"><h2>What they told us</h2><div id="slots"></div></div>
+        <div class="card"><h2>Action ledger</h2><div id="ledger" class="ledger"></div></div>
+      </div>
+    </div>`;
+  let lastTurns = -1;
+
+  every(2500, async () => {
+    const d = await api(`/calls/${encodeURIComponent(id)}`);
+    if (!$('#head')) return;
+    const c = d.call;
+
+    const banners = [];
+    if (d.flags.includes('suspected_no_audio')) banners.push(`<div class="banner"><strong>No audio from the caller.</strong>
+      Likely a carrier fault, not the agent. Hang up and redial, or use a web call.</div>`);
+    if (d.flags.includes('ringing_silently')) banners.push(`<div class="banner warn"><strong>Not answered after 15 seconds.</strong>
+      If the phone is ringing silently, hang up and redial.</div>`);
+    if (d.escalation) banners.push(`<div class="banner warn"><strong>Needs a human — ${esc(d.escalation.reason)}.</strong>
+      “${esc(d.escalation.quote)}”</div>`);
+    $('#banner').innerHTML = banners.join('');
+
+    const live = !['ended', 'failed'].includes(c.status);
+    const started = c.answered_at || c.started_at;
+    const seconds = started ? Math.max(0, Math.round(((c.ended_at ? new Date(c.ended_at) : new Date()) - new Date(started)) / 1000)) : null;
+    const name = d.slots.contact_name && d.slots.contact_name.value;
+    const sells = d.slots.products && d.slots.products.value;
+    $('#head').innerHTML = `<div class="row"><div>
+        <span class="pill ${live ? 'live' : ''}">${live ? '● live' : esc(c.status)}</span>
+        <strong style="font-size:1.05rem;margin-left:.4rem">${esc(name || 'Unnamed lead')}</strong>
+        <span class="dim"> · ${esc(d.destination_masked)}${sells ? ` · sells ${esc(sells)}` : ''}</span></div>
+      <div class="dim">${when(c.created_at)} · ${dur(seconds)}${c.ended_reason ? ` · ${esc(c.ended_reason)}` : ''}
+        ${c.recording_url ? ` · ${link(c.recording_url, 'recording')}` : ''}</div></div>`;
+
+    if (d.turns.length !== lastTurns) {
+      const box = $('#turns');
+      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      box.innerHTML = d.turns.map(t => `<div class="turn ${t.role === 'user' ? 'lead' : 'agent'}">
+        <span class="who">${t.role === 'user' ? 'LEAD' : 'AGENT'}</span><span>${esc(t.text)}</span></div>`).join('')
+        || '<span class="dim">Waiting for the first words…</span>';
+      if (atBottom || lastTurns < 0) box.scrollTop = box.scrollHeight;
+      lastTurns = d.turns.length;
+      $('#tcount').textContent = `${d.turns.length} turns`;
+    }
+
+    const cls = d.classification;
+    const history = d.classification_history.map(h => `${pill(h.label)} <span class="faint">${clock(h.created_at)}</span>`)
+      .join(' <span class="faint">→</span> ');
+    $('#intent').innerHTML = cls
+      ? `<div>${pill(cls.label)}${cls.barrier && cls.barrier !== 'none' ? ` <span class="dim">barrier: ${esc(cls.barrier.replace('_', ' '))}</span>` : ''}</div>
+         ${cls.evidence_quote ? `<p class="quote" style="margin:.5rem 0 0">“${esc(cls.evidence_quote)}”</p>` : ''}
+         <div class="timeline">${history}</div>`
+      : '<span class="dim">Not read yet — the lead has not said enough.</span>';
+
+    $('#apps').innerHTML = appsHtml(d);
+
+    const order = [['products', 'Sells'], ['catalogue_size', 'Catalogue'], ['timeline', 'Timeline'],
+                   ['features', 'Needs'], ['budget', 'Budget'], ['contact_name', 'Name']];
+    $('#slots').innerHTML = `<div class="kv">${order.map(([k, label]) => {
+      const s = d.slots[k];
+      const body = s && s.value
+        ? esc(s.value) + (s.raw_quote ? `<div class="quote">“${esc(s.raw_quote)}”</div>` : '')
+        : '<span class="faint">not yet</span>';
+      return `<div class="k">${label}</div><div>${body}</div>`;
+    }).join('')}</div>`;
+
+    $('#ledger').innerHTML = d.actions.map(a => `<div class="item">
+        <span class="faint">${clock(a.sent_at || a.requested_at)}</span>
+        <span>${esc(a.type)} <span class="faint">· ${esc(a.trigger_source || '')}</span>
+          ${a.error ? `<div class="s-failed" style="font-size:.8rem">${esc(a.error.split('\n')[0].slice(0, 160))}</div>` : ''}</span>
+        <span class="s-${esc(a.status)}">${esc(a.status)}</span></div>`).join('')
+      || '<span class="dim">Nothing fired yet.</span>';
+  });
+}
+
+// ---------------------------------------------------------------- integrations
+
+const ABOUT = {
+  google_calendar: ['Google Calendar', 'Checks freeBusy before booking a callback, offers the next free slot when the one asked for is taken, and keeps exactly one event per call.'],
+  hubspot: ['HubSpot', 'Finds or creates the contact by phone, moves a deal to the stage the read earned — never backwards — and writes one note at call end.'],
+  slack: ['Slack', 'Alerts the sales team while the call is live: one message per call, edited in place. Escalations go out as a threaded ping.'],
+};
+
+function integrationsPage() {
+  view.innerHTML = `<div class="row" style="margin:.25rem 0 1rem"><h1 style="font-size:1.25rem;margin:0">Integrations</h1>
+    <button id="recheck">Re-check live</button></div><div id="ints"></div>`;
+  const load = async () => {
+    const box = $('#ints');
+    if (!box) return;
+    box.innerHTML = '<div class="card dim">Calling each app…</div>';
+    try {
+      const d = await api('/api/integrations');
+      const cards = Object.entries(ABOUT).map(([k, [name, about]]) => {
+        const live = d.apps[k] || {}, st = d.status[k] || {}, last = st.last_action;
+        const state = live.ok ? 'connected' : (st.configured ? 'error' : 'not configured');
+        return `<div class="card"><div class="row"><h2 style="margin:0">${name}</h2>
+            <span><i class="dot ${live.ok ? 'ok' : 'bad'}"></i>${state}</span></div>
+          <p class="dim" style="margin:.6rem 0 .8rem">${about}</p>
+          <div class="kv"><div class="k">Live check</div><div>${esc(live.detail || '')}</div>
+            <div class="k">Last action</div><div>${last
+              ? `${esc(last.action)} · <span class="s-${esc(last.status)}">${esc(last.status)}</span> · ${when(last.at)}
+                 ${last.error ? `<div class="s-failed">${esc(last.error)}</div>` : ''}`
+              : '<span class="faint">none yet</span>'}</div></div></div>`;
+      }).join('');
+      const m = d.status.understanding_model || {};
+      box.innerHTML = `<div class="grid2">${cards}
+        <div class="card"><div class="row"><h2 style="margin:0">Understanding model</h2>
+          <span><i class="dot ${m.ready ? 'ok' : 'bad'}"></i>${m.ready ? 'ready' : 'not ready'}</span></div>
+          <p class="dim" style="margin:.6rem 0 .8rem">Reads intent and extracts the five discovery facts off the speech path, with strict JSON output.</p>
+          <div class="kv"><div class="k">Provider</div><div>${esc(m.provider)}</div>
+            <div class="k">Model</div><div>${esc(m.model)}</div></div></div></div>`;
+    } catch (e) {
+      box.innerHTML = `<div class="card">Could not check: ${esc(e.message)}</div>`;
+    }
+  };
+  $('#recheck').onclick = load;
+  load();
+}
+
+// ---------------------------------------------------------------- evidence
+
+const OFFLINE = `<div class="card"><h2>Offline suites · no network, no spend</h2><div class="tablewrap"><table><tbody>
+  <tr><td><code>python backend/smoke_test.py</code></td><td class="dim">Webhook replay with every transport faked: idempotency, taken slots, a deal stage that never moves back, one Slack message per call.</td></tr>
+  <tr><td><code>python backend/eval_classifier.py --llm</code></td><td class="dim">59 labelled Hot / Warm / Cold cases in English, Hindi and Telugu. Last measured on Groq gpt-oss-20b: 57/59 (97%), 4/4 on the assignment's own phrases.</td></tr>
+  <tr><td><code>python backend/eval_timeparse.py</code></td><td class="dim">57 spoken callback times resolved against a frozen clock.</td></tr>
+  <tr><td><code>python backend/replay_harness.py</code></td><td class="dim">The run above: calls replayed through the real apps, twice each, verified by asking the apps.</td></tr>
+</tbody></table></div></div>`;
+
+async function evidencePage() {
+  view.innerHTML = '<div class="card dim">loading…</div>';
+  const d = await api('/api/evals/latest');
+  if (!d.available) {
+    view.innerHTML = `<div class="card"><h2>Evidence</h2><p>No replay run yet.</p>
+      <p class="dim">Run <code>python backend/replay_harness.py</code>. It replays calls through the real apps,
+      twice each, and checks the result with the apps themselves.</p></div>${OFFLINE}`;
+    return;
+  }
+  const rate = d.pass_rate == null ? '—' : `${Math.round(d.pass_rate * 100)}%`;
+  const apps = Object.entries(d.apps).map(([k, a]) =>
+    `<span style="margin-right:.8rem"><i class="dot ${a.ok ? 'ok' : 'bad'}"></i>${esc(k.replace('_', ' '))}</span>`).join('');
+  const byScenario = {};
+  for (const s of d.summary) (byScenario[s.scenario] = byScenario[s.scenario] || []).push(s);
+  const detailFor = (scenario, assertion) => {
+    const hit = d.results.find(r => r.scenario === scenario && r.assertion.replace(/^pass \d: /, '') === assertion && r.detail);
+    return hit ? hit.detail : '';
+  };
+  const scenarios = Object.entries(byScenario).map(([scenario, rows]) => `
+    <div class="card"><h2>${esc(scenario)}</h2><div class="tablewrap"><table><tbody>${rows.map(r => {
+      const total = r.passed + r.failed;
+      const mark = !total ? '<span class="faint">–</span>' : (r.failed ? '<span class="mark-bad">✕</span>' : '<span class="mark-ok">✓</span>');
+      const note = detailFor(scenario, r.assertion);
+      return `<tr><td style="width:2rem">${mark}</td><td>${esc(r.assertion)}
+          ${note && (r.failed || !total) ? `<div class="faint" style="font-size:.8rem">${esc(note)}</div>` : ''}</td>
+        <td class="dim" style="white-space:nowrap;text-align:right">${total ? `${r.passed}/${total}` : 'skipped'}</td></tr>`;
+    }).join('')}</tbody></table></div></div>`).join('');
+
+  view.innerHTML = `<div class="grid2" style="margin-bottom:1rem">
+      <div class="card"><h2>Replay against the real apps</h2><div class="big">${rate}</div>
+        <div class="dim">${d.passed} passed · ${d.failed} failed · ${d.skipped} skipped</div></div>
+      <div class="card"><h2>Run</h2><div class="kv">
+        <div class="k">Finished</div><div>${when(d.finished_at)}</div>
+        <div class="k">Model</div><div>${esc(d.model)}</div>
+        <div class="k">Scope</div><div>${d.runs} run × ${d.scenarios.length} scenarios, each replayed twice</div>
+        <div class="k">Apps</div><div>${apps}</div>
+        <div class="k">Lead-facing</div><div>${d.lead_facing_sends_stubbed} WhatsApp sends stubbed — nothing reached a phone</div>
+      </div></div></div>
+    ${scenarios}${OFFLINE}`;
+}
+
+dots();
+setInterval(dots, 60000);
+route();
+</script>
+</body>
+</html>

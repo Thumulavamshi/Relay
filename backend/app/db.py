@@ -85,12 +85,28 @@ def conn():
         raise
 
 
+# Columns added after real databases already existed. CREATE TABLE IF NOT EXISTS
+# never alters a table that is already there, so each is added here if missing -
+# which is the entire migration story for a schema this small.
+ADDED_COLUMNS = {
+    "calls": ("hubspot_contact_id", "hubspot_deal_id", "hubspot_deal_stage",
+              "hubspot_note_id", "slack_channel", "slack_ts",
+              "gcal_event_id", "gcal_event_link"),
+    "callbacks": ("availability",),
+}
+
+
 def init_db():
     with open(SCHEMA_PATH, encoding="utf-8") as fh:
         sql = fh.read()
     with conn() as cx:
         cx.execute("PRAGMA journal_mode=WAL")   # persistent; set once, not per connection
         cx.executescript(sql)
+        for table, columns in ADDED_COLUMNS.items():
+            have = {row["name"] for row in cx.execute(f"PRAGMA table_info({table})")}
+            for column in columns:
+                if column not in have:
+                    cx.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
 
 # ----------------------------------------------------------------- calls
@@ -127,7 +143,8 @@ def attach_provider_id(call_id, provider_call_id):
 def update_call(call_id, **fields):
     """Update whitelisted columns only - field names come from webhook payloads."""
     allowed = {"status", "started_at", "answered_at", "ended_at", "ended_reason",
-               "recording_url", "summary", "provider_call_id"}
+               "recording_url", "summary", "provider_call_id",
+               *ADDED_COLUMNS["calls"]}
     fields = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not fields:
         return
@@ -151,6 +168,15 @@ def call_id_for_provider(provider_call_id):
         row = cx.execute("SELECT id FROM calls WHERE provider_call_id=?",
                          (provider_call_id,)).fetchone()
     return row["id"] if row else None
+
+
+def hubspot_contact_for(destination):
+    """The HubSpot contact an earlier call to this number already resolved, if any."""
+    with conn() as cx:
+        row = cx.execute("SELECT hubspot_contact_id FROM calls WHERE destination=?"
+                         " AND hubspot_contact_id IS NOT NULL"
+                         " ORDER BY created_at DESC LIMIT 1", (destination,)).fetchone()
+    return row["hubspot_contact_id"] if row else None
 
 
 def stale_calls(live_statuses, updated_before):
@@ -251,6 +277,28 @@ def get_events(call_id, limit=200):
     return [dict(r) for r in rows]
 
 
+def has_event(call_id, type_):
+    with conn() as cx:
+        return cx.execute("SELECT 1 FROM events WHERE call_id=? AND type=? LIMIT 1",
+                          (call_id, type_)).fetchone() is not None
+
+
+def event_payloads(call_id, types):
+    """Payloads of this call's events of the given types, oldest first, with their time."""
+    marks = ",".join("?" for _ in types)
+    with conn() as cx:
+        rows = cx.execute(f"SELECT type, payload, created_at FROM events WHERE call_id=?"
+                          f" AND type IN ({marks}) ORDER BY id", (call_id, *types)).fetchall()
+    return [{"type": r["type"], "at": r["created_at"], **json.loads(r["payload"])} for r in rows]
+
+
+def latest_event_payload(call_id, type_):
+    with conn() as cx:
+        row = cx.execute("SELECT payload FROM events WHERE call_id=? AND type=?"
+                         " ORDER BY id DESC LIMIT 1", (call_id, type_)).fetchone()
+    return json.loads(row["payload"]) if row else None
+
+
 # ----------------------------------------------------------------- slots
 
 def upsert_slot(call_id, name, value, raw_quote=None, source_turn_seq=None, confidence=None):
@@ -336,15 +384,29 @@ def get_actions(call_id):
     return [dict(r) for r in rows]
 
 
+def latest_action_per_type(types):
+    """The most recent action of each type, any call. Feeds /health's per-app status."""
+    marks = ",".join("?" for _ in types)
+    with conn() as cx:
+        rows = cx.execute(
+            "SELECT type, status, error, requested_at, sent_at, call_id FROM actions"
+            f" WHERE id IN (SELECT MAX(id) FROM actions WHERE type IN ({marks}) GROUP BY type)",
+            tuple(types)).fetchall()
+    return {r["type"]: dict(r) for r in rows}
+
+
 # ----------------------------------------------------------------- callbacks
 
-def add_callback(call_id, resolved_at_utc, spoken_phrase=None, resolution_rule=None):
+def add_callback(call_id, resolved_at_utc, spoken_phrase=None, resolution_rule=None,
+                 availability=None):
     now = utc_now()
     with conn() as cx:
         cur = cx.execute(
             "INSERT INTO callbacks (call_id, spoken_phrase, resolved_at_utc,"
-            " resolution_rule, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-            (call_id, spoken_phrase, resolved_at_utc, resolution_rule, "pending", now, now),
+            " resolution_rule, status, availability, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (call_id, spoken_phrase, resolved_at_utc, resolution_rule, "pending",
+             availability, now, now),
         )
         return cur.lastrowid
 
@@ -370,7 +432,7 @@ def claim_due_callback(now_utc=None):
 
 
 def update_callback(callback_id, **fields):
-    allowed = {"status", "placed_call_id", "confirmed_aloud"}
+    allowed = {"status", "placed_call_id", "confirmed_aloud", "availability"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return

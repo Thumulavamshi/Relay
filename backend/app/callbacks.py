@@ -22,9 +22,10 @@ the next `uvicorn` start.
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
-from . import db, dialler, timeparse
+from . import db, dialler, gcal, timeparse
 from .config import settings
 
 log = logging.getLogger("elevatebox.callbacks")
@@ -35,6 +36,25 @@ MAX_LATENESS = timedelta(minutes=int(
 
 
 # --------------------------------------------------------------- booking
+
+# Slots the lead has already been told are taken, per call. Asking for the same
+# one again means they insist - and overruling them twice would sound worse than
+# a double-booked rep, who can move their own meeting.
+_OFFERED_BUSY = {}
+
+
+def check_calendar(call_id, resolution):
+    """freeBusy for the resolved slot, recorded as an event. Never raises."""
+    if not gcal.configured()[0]:
+        return gcal.Availability("not_configured")
+    started = time.monotonic()
+    result = gcal.availability(resolution.when_ist)
+    db.add_event(call_id, "calendar.availability", {
+        "requested_utc": resolution.when_utc, "status": result.status,
+        "alternative": result.alternative.isoformat() if result.alternative else None,
+        "ms": round((time.monotonic() - started) * 1000), "detail": result.detail})
+    return result
+
 
 def book(call_id, phrase, now=None):
     """Resolve a spoken phrase and persist the booking. Returns what to SAY.
@@ -53,6 +73,26 @@ def book(call_id, phrase, now=None):
         return ("Could not work out a time from that. Ask them which day and "
                 "roughly what time suits, then call this again.")
 
+    # Check the rep's calendar BEFORE committing. A taken slot books nothing:
+    # the agent offers the next free one, and the lead decides.
+    availability = check_calendar(call_id, resolution)
+    status = availability.status
+    if status == "busy":
+        offered = _OFFERED_BUSY.setdefault(call_id, set())
+        if availability.alternative and resolution.when_utc not in offered:
+            offered.add(resolution.when_utc)
+            alt = timeparse.Resolution(availability.alternative, "calendar:next-free",
+                                       False, phrase, resolution.now)
+            log.info("call %s: %s is taken on the calendar - offering %s", call_id,
+                     resolution.when_ist.strftime("%Y-%m-%d %H:%M"),
+                     alt.when_ist.strftime("%Y-%m-%d %H:%M"))
+            return (f"Not booked: {resolution.spoken()} is already taken on the calendar. "
+                    f"Offer {alt.spoken()} ({alt.when_ist:%H:%M on %A %d %B}) instead. "
+                    "If they agree, call schedule_callback again with that time; if they "
+                    "insist on the original time, call it again with their original words.")
+        # They insisted, or nothing nearby is free. Book what they asked for.
+        status = "busy_confirmed"
+
     # A lead who restates the time ("actually, make it Friday") replaces the
     # booking rather than adding a second one. Two pending callbacks would mean
     # two calls.
@@ -63,9 +103,9 @@ def book(call_id, phrase, now=None):
             replaced += 1
 
     db.add_callback(call_id, resolution.when_utc, spoken_phrase=phrase,
-                    resolution_rule=resolution.rule)
-    log.info("call %s: callback booked for %s IST via %s%s", call_id,
-             resolution.when_ist.strftime("%Y-%m-%d %H:%M"), resolution.rule,
+                    resolution_rule=resolution.rule, availability=status)
+    log.info("call %s: callback booked for %s IST via %s, calendar %s%s", call_id,
+             resolution.when_ist.strftime("%Y-%m-%d %H:%M"), resolution.rule, status,
              f" (replaced {replaced})" if replaced else "")
 
     said = resolution.spoken()

@@ -43,6 +43,11 @@ KNOWN_TYPES = {
     "whatsapp_resume":    "Resume as a document, right after the follow-up.",
     "whatsapp_brochure":  "Cold-lead brochure.",
     "callback_confirm":   "Confirmation that a callback was booked.",
+    # The multi-app layer (integrations.py). Keyed per MOMENT, not per call.
+    "calendar_event":     "Google Calendar event for the booked callback.",
+    "crm_sync":           "HubSpot contact and deal, converged to the current read.",
+    "crm_note":           "HubSpot note at call end: read, quotes, links.",
+    "team_alert":         "Slack message for the sales team, edited in place.",
 }
 
 
@@ -54,12 +59,15 @@ def handler(action_type):
     return register
 
 
-def idempotency_key(call_id, action_type):
-    """One action of each type per call. This is the exactly-once guarantee."""
-    return f"{call_id}:{action_type}"
+def idempotency_key(call_id, action_type, suffix=None):
+    """One action of each type per call - or, with a suffix, one per call per
+    MOMENT (`crm_sync:hot`). This is the exactly-once guarantee."""
+    base = f"{call_id}:{action_type}"
+    return f"{base}:{suffix}" if suffix else base
 
 
-def dispatch(call_id, action_type, payload=None, trigger_source=None, background=None):
+def dispatch(call_id, action_type, payload=None, trigger_source=None, background=None,
+             key_suffix=None):
     """Claim and fire. Returns the action id, or None if already claimed.
 
     Safe to call from a webhook handler: it does one INSERT and schedules work.
@@ -70,7 +78,7 @@ def dispatch(call_id, action_type, payload=None, trigger_source=None, background
     Outside a request (the watchdog, the callback worker) we fall back to
     create_task and hold a strong reference.
     """
-    key = idempotency_key(call_id, action_type)
+    key = idempotency_key(call_id, action_type, key_suffix)
     action_id = db.claim_action(call_id, action_type, key,
                                 trigger_source=trigger_source, payload=payload)
     if action_id is None:
@@ -112,7 +120,9 @@ BACKOFF_SECONDS = 3
 # or the destination is refused - those fail identically every time and a retry
 # just delays an honest error.
 _TRANSIENT = ("eof occurred", "timed out", "timeout", "connection", "reset",
-              "temporarily", "unreachable", "ssl", "502", "503", "504")
+              "temporarily", "unreachable", "ssl", "500", "502", "503", "504",
+              # HubSpot and Groq rate-limit with 429; Slack says it in words.
+              "429", "ratelimited")
 
 
 def _is_transient(exc):

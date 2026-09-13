@@ -27,6 +27,8 @@ import re
 
 from pydantic import BaseModel, Field
 
+from . import rest
+
 log = logging.getLogger("elevatebox.classifier")
 
 LABELS = ("hot", "warm", "cold")
@@ -36,6 +38,15 @@ BARRIERS = ("budget", "timing", "decision_maker", "none")
 # overlay are shared, and only the transport differs. Switching providers is a
 # config change, so we can develop on a free tier and move if evidence says to.
 PROVIDERS = {
+    "groq": {
+        # OpenAI-compatible endpoint over stdlib HTTP - nothing to install.
+        # gpt-oss-20b is one of the models Groq serves with STRICT json_schema,
+        # so the reply is guaranteed to parse as LeadRead / ExtractedSlots.
+        "default_model": "openai/gpt-oss-20b",
+        "key_env": "GROQ_API_KEY",
+        "package": "urllib.request",
+        "install": "stdlib - nothing to install",
+    },
     "anthropic": {
         "default_model": "claude-opus-5",
         "key_env": "ANTHROPIC_API_KEY",
@@ -354,7 +365,81 @@ def _call_gemini(system, user, model, schema, max_tokens):
     return response.parsed
 
 
-_CALLERS = {"anthropic": _call_anthropic, "gemini": _call_gemini}
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_TIMEOUT = float(os.environ.get("GROQ_TIMEOUT_SECONDS", "30"))
+# Models Groq guarantees schema-valid output for (strict: true). Any other model
+# runs best-effort and is still validated by Pydantic on the way back.
+GROQ_STRICT_MODELS = {"openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"}
+# gpt-oss reasons before it answers, and those tokens count against the limit. A
+# budget sized for the answer alone comes back truncated with no content at all.
+GROQ_REASONING_TOKENS = int(os.environ.get("GROQ_REASONING_TOKENS", "1024"))
+GROQ_REASONING_EFFORT = os.environ.get("GROQ_REASONING_EFFORT", "low")
+
+
+def strict_schema(model_cls):
+    """Pydantic's JSON schema, reshaped for Groq's strict mode.
+
+    Strict mode wants every object closed (additionalProperties: false) with every
+    property required, and Pydantic emits nested models as $ref into $defs. Both
+    LeadRead and ExtractedSlots go through this one transform.
+    """
+    raw = model_cls.model_json_schema()
+    defs = raw.pop("$defs", {})
+
+    def fix(node):
+        if isinstance(node, list):
+            return [fix(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        if "$ref" in node:
+            target = dict(defs[node["$ref"].rsplit("/", 1)[-1]])
+            target.update({k: v for k, v in node.items() if k != "$ref"})
+            return fix(target)
+        out = {}
+        for key, value in node.items():
+            if key in ("title", "default"):
+                continue
+            out[key] = ({name: fix(sub) for name, sub in value.items()}
+                        if key == "properties" else fix(value))
+        if out.get("type") == "object":
+            out["additionalProperties"] = False
+            out["required"] = list(out.get("properties", {}))
+        return out
+
+    return fix(raw)
+
+
+def _groq_request(payload):
+    """The single Groq transport. The smoke test replaces this."""
+    return rest.call("groq", "POST", GROQ_URL,
+                     headers={"Authorization": "Bearer " + os.environ.get("GROQ_API_KEY", "")},
+                     json_body=payload, timeout=GROQ_TIMEOUT)
+
+
+def _call_groq(system, user, model, schema, max_tokens):
+    """Groq's OpenAI-compatible chat completions with a json_schema response format."""
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": schema.__name__,
+            "strict": model in GROQ_STRICT_MODELS,
+            "schema": strict_schema(schema)}},
+        "max_completion_tokens": max_tokens + GROQ_REASONING_TOKENS,
+    }
+    if model.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = GROQ_REASONING_EFFORT
+    data = _groq_request(payload)
+    choice = (data.get("choices") or [{}])[0]
+    content = (choice.get("message") or {}).get("content")
+    if not content:
+        raise RuntimeError(f"groq returned no content "
+                           f"(finish_reason={choice.get('finish_reason')})")
+    return schema.model_validate_json(content)
+
+
+_CALLERS = {"groq": _call_groq, "anthropic": _call_anthropic, "gemini": _call_gemini}
 
 
 def run_structured(system, user, schema, provider=None, max_tokens=1000):

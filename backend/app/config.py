@@ -142,6 +142,34 @@ class Settings:
         # Deliberate, explicit opt-in before anything can reach the evaluator.
         self.allow_evaluator = os.environ.get("ALLOW_EVALUATOR", "") == "1"
 
+        # --- Multi-app layer. Each app is optional: with no credentials it is
+        # never dispatched to, and /health says which ones are live.
+        self.google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        self.google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        self.google_refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
+        # "primary" is the rep's own calendar. A dedicated one keeps test runs
+        # out of their day and makes harness cleanup safe.
+        self.google_calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "").strip() or "primary"
+
+        self.hubspot_token = os.environ.get("HUBSPOT_TOKEN", "").strip()
+        self.hubspot_portal_id = os.environ.get("HUBSPOT_PORTAL_ID", "").strip()
+        # Stage ids belong to the portal. The stock pipeline uses readable ids; a
+        # customised one (ours) uses numbers, so these have to come from env.
+        self.hubspot_pipeline_id = os.environ.get("HUBSPOT_PIPELINE_ID", "").strip() or "default"
+        self.hubspot_stage_hot = (os.environ.get("HUBSPOT_STAGE_HOT", "").strip()
+                                  or "qualifiedtobuy")
+        self.hubspot_stage_warm = (os.environ.get("HUBSPOT_STAGE_WARM", "").strip()
+                                   or "appointmentscheduled")
+
+        self.slack_bot_token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+        self.slack_channel_id = os.environ.get("SLACK_CHANNEL_ID", "").strip()
+
+        # Where links in Slack, HubSpot and Calendar point back to. Falls back to
+        # SERVER_URL, which agent.py already needs for the webhook.
+        self.public_base_url = (os.environ.get("PUBLIC_BASE_URL", "").strip()
+                                or os.environ.get("SERVER_URL", "").strip()).rstrip("/")
+        self.vapi_public_key = os.environ.get("VAPI_PUBLIC_KEY", "").strip()
+
     def missing(self):
         """Which settings block placing a call. Read endpoints work without them."""
         required = {

@@ -39,10 +39,11 @@ dial → speak → sell → discover → understand → classify → act mid-cal
 |---|---|
 | Turn latency | **median 1.7 s, 0 of 9 turns over 3 s** (Vapi's own metrics) |
 | Discovery coverage | **5/5 topics** on a full Hindi call |
-| Intent classification | **96%** (55/57) at last full run · **4/4** on the brief's own phrases · hi 4/4, te 3/4, code-mixed 5/5 · rules layer **59/59** |
+| Intent classification | **97%** (57/59) on Groq `gpt-oss-20b` · **4/4** on the brief's own phrases · hi 4/4, te 3/4, code-mixed 5/5 · rules layer **59/59** |
 | Callback time resolution | **57/57** phrasings against a frozen clock, en/hi/te |
 | Slot extraction | **30 slots** over 7 real calls, 29 verbatim-quoted, **0 quote-integrity violations** |
-| Backend | **123 assertions**, no network, no spend, ~4 s |
+| Multi-app replay | **45/45** checks against live HubSpot and Slack, every call replayed twice — one contact, one deal, one note, one Slack message (Calendar checks pending a valid Google token) |
+| Backend | **170 assertions**, no network, no spend |
 
 Every number above is reproducible from this repo — see **Running it**.
 
@@ -59,15 +60,37 @@ latency and mid-call side effects possible at the same time.
 Telnyx ──SIP──► Vapi ──► Soniox STT ─► gpt-4o-mini ─► Cartesia TTS      speech lane
                           │
                           ▼
-                   FastAPI + SQLite ──► extraction ─┐  claude-haiku-4-5  understanding
-                          │             classification ┘  concurrent      lane
+                   FastAPI + SQLite ──► extraction ─┐  gpt-oss-20b       understanding
+                          │             classification ┘  (Groq)          lane
                           ▼
-                   idempotent action bus ──► WhatsApp · callback worker
+                   idempotent action bus ──► Google Calendar · HubSpot · Slack
+                                             WhatsApp · callback worker
 ```
 
 Full component breakdown, every technology decision and what was rejected:
 **[docs/system-design.md](docs/system-design.md)** — §8b records where reality diverged
 from the plan and why.
+
+---
+
+## The multi-app layer
+
+While the call is live, the agent acts in the sales team's own apps. Every action is a row on
+the same idempotent action bus as the WhatsApp messages, so it runs in the background, retries
+transient failures, and leaves a ledger entry saying what fired and why
+([`backend/app/integrations.py`](backend/app/integrations.py)).
+
+| App | When | What | Its own duplicate guard |
+|---|---|---|---|
+| **Google Calendar** | inside `schedule_callback` | `freeBusy` on the requested slot, 0.8 s budget. Free → book. Taken → nothing booked; the agent offers the next free slot. No answer → book, flagged `unchecked` | event id derived from the call id: a retry is a 409 that becomes an update, and a restated time moves the one event |
+| **HubSpot** | each change of read, a booked callback, call end | contact by phone · Hot → deal at the hot stage · Warm + callback → warm stage · Cold → contact only · one note with verbatim quotes | ids on the call row; a known contact reused before searching; a deal stage only moves forward |
+| **Slack** | Hot mid-call, callback booked, CRM record written, call end | one message per call, edited in place. "Speak to a person", a dispute or distress → a threaded reply broadcast to the channel | message `ts` on the call row: update, never re-post |
+
+WhatsApp remains the only lead-facing channel and is not counted among the apps.
+
+The web UI at `/` starts a web or phone call, shows the live transcript, the intent timeline and
+a deep link into every app action, flags carrier audio faults, checks each integration live, and
+shows the latest replay evidence.
 
 ---
 
@@ -106,7 +129,12 @@ python -m uvicorn app.main:app --app-dir backend --port 8000
 python agent/agent.py deploy          # push prompt + config to Vapi, free
 python agent/agent.py call --yes      # places a REAL call
 python agent/agent.py review          # score the last call offline
+python backend/replay_harness.py      # 3 calls, each replayed twice through the REAL apps,
+                                      # verified by asking the apps, then cleaned up
 ```
+
+`GET /api/integrations` checks every connected app live, read-only. `backend/replay_harness.py
+--model scripted` proves the apps without spending model tokens; WhatsApp is always stubbed there.
 
 `POST /calls` **takes no phone number.** The destination comes only from
 `ALLOWED_DESTINATION`, so the endpoint cannot be used as an open dialler if the URL leaks.
