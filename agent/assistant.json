@@ -75,27 +75,8 @@
     "end-of-call-report",
     "tool-calls"
   ],
-  "_comment_tool_definitions": "NOT part of the assistant payload. Vapi rejects a top-level `tools` property with 400 'property tools should not exist'. A custom tool is its own resource: agent.py creates or updates each via POST/PATCH /tool at deploy time and attaches the returned ids as model.toolIds. Kept here so the definitions stay versioned with the assistant. THE TWO TOOLS DIFFER ON async, deliberately: send_details_now is async because it needs no answer - the 29 Aug call proved the watchdog had already sent the message TWO MINUTES before the model called the tool, so waiting bought nothing and cost an audible pause plus an English 'this will just take a sec' in the middle of a Hindi conversation (audit R4 wanted non-blocking as the primary path anyway). schedule_callback stays sync because its whole purpose is to return the resolved time for the agent to say aloud, which is the part the evaluator can actually hear.",
+  "_comment_tool_definitions": "NOT part of the assistant payload. Vapi rejects a top-level `tools` property with 400 'property tools should not exist'. A custom tool is its own resource: agent.py creates or updates each via POST/PATCH /tool at deploy time and attaches the returned ids as model.toolIds. Kept here so the definitions stay versioned with the assistant. schedule_callback is sync because its whole purpose is to return the resolved time - and whether that slot is free on the rep's calendar - for the agent to say aloud. send_details_now (WhatsApp) was removed: the agent no longer sends the lead anything, and deploy attaches only the tools listed here.",
   "_tool_definitions": [
-    {
-      "type": "function",
-      "function": {
-        "name": "send_details_now",
-        "description": "Send the caller the details on WhatsApp immediately, while still on the call. Call this the moment they ask to be sent details, pricing, a quote or a portfolio, or ask when work could start. Do not ask permission first - just call it and keep talking, then tell them it is on its way. It sends in the background and returns nothing.",
-        "parameters": {
-          "type": "object",
-          "properties": {},
-          "required": []
-        }
-      },
-      "async": true,
-      "messages": [
-        {
-          "type": "request-start",
-          "content": ""
-        }
-      ]
-    },
     {
       "type": "function",
       "function": {

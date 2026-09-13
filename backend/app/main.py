@@ -12,11 +12,12 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import actions, callbacks, classifier, db, dialler, reconcile, understanding
 from . import handlers  # noqa: F401  - importing registers the action handlers
-from . import whatsapp
+from . import callfacts, gcal, views, whatsapp
+from . import integrations  # importing registers the Calendar / HubSpot / Slack handlers
 from .config import EVALUATOR_NUMBER, settings
 
 def _build_stamp():
@@ -56,7 +57,10 @@ async def lifespan(_app):
     # and a garbage-collected worker would look exactly like "the callback never
     # fired" - the same trap that bites fire-and-forget sends.
     workers = [asyncio.create_task(callbacks.worker()),
-               asyncio.create_task(reconcile.worker())]
+               asyncio.create_task(reconcile.worker()),
+               # A warm Google token makes the freeBusy inside a live tool call
+               # one round trip instead of two. Best-effort; never blocks startup.
+               asyncio.create_task(asyncio.to_thread(gcal.warm))]
     try:
         yield
     finally:
@@ -98,7 +102,30 @@ def health():
         "understanding": understanding.status_report(),
         "classifier": classifier.providers_status(),
         "whatsapp": dict(zip(("ready", "detail"), whatsapp.configured())),
+        "integrations": integrations.status_report(),
     }
+
+
+@app.get("/api/integrations")
+async def integrations_check():
+    """Live, read-only check of every connected app: does the token work, and is
+    the configuration we act on - calendar, pipeline stages, channel - real?"""
+    return {"apps": await integrations.live_check(),
+            "status": integrations.status_report()}
+
+
+EVIDENCE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "data", "evals", "replay-latest.json")
+
+
+@app.get("/api/evals/latest")
+def latest_eval():
+    """The latest replay-harness run against the real apps (backend/replay_harness.py)."""
+    import json
+    if not os.path.exists(EVIDENCE_PATH):
+        return {"available": False, "hint": "run: python backend/replay_harness.py"}
+    with open(EVIDENCE_PATH, encoding="utf-8") as fh:
+        return {"available": True, **json.load(fh)}
 
 
 # ----------------------------------------------------------------- trigger
@@ -171,15 +198,22 @@ btn.onclick=async()=>{
 </script>"""
 
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
-    """The 'live prototype, callable on demand' the assignment asks for.
-
-    Deliberately one file, no build step and no framework: the requirement is
-    that the evaluator can open a link on a phone and press one button with
-    nothing installed. The button posts to /calls, which takes no phone number,
-    so the page cannot be used to dial anything but the configured destination.
+    """The Relay web UI: start a call, watch it live, see every app action and
+    the evidence. Static HTML and vanilla JS, no build step - it polls the same
+    read routes the API exposes, so it can never show anything the data does not.
     """
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/classic", response_class=HTMLResponse)
+def classic():
+    """The original one-button page. It posts to /calls, which takes no phone
+    number, so it cannot dial anything but the configured destination."""
     return HTMLResponse(PAGE)
 
 
@@ -300,6 +334,8 @@ def get_call(call_id: str):
         "classification_history": db.classification_history(call_id),
         "actions": db.get_actions(call_id),
         "callbacks": db.get_callbacks(call_id),
+        # App deep links, carrier-fault flags, escalation, calendar checks.
+        **views.detail_extras(call_id),
     }
 
 
@@ -308,6 +344,31 @@ def get_transcript(call_id: str):
     if not db.get_call(call_id):
         raise HTTPException(404, "no such call")
     return {"call_id": call_id, "transcript": db.transcript_text(call_id)}
+
+
+@app.get("/api/config")
+def ui_config():
+    """What the web UI needs to start a call. The Vapi PUBLIC key is designed to
+    live in a browser; the destination is shown masked, never in full."""
+    return {
+        "vapi_public_key": settings.vapi_public_key,
+        "assistant_id": settings.vapi_assistant_id if settings.vapi_public_key else "",
+        "destination_masked": views.mask(settings.allowed_destination),
+        "can_place_calls": not settings.missing(),
+        "missing": settings.missing(),
+    }
+
+
+@app.get("/api/calls")
+def call_summaries(limit: int = 30):
+    """Calls with intent, per-app action status and fault flags, for the Calls list."""
+    return {"calls": [views.call_summary(c) for c in db.list_calls(min(limit, 100))]}
+
+
+@app.get("/api/calls/by-provider/{provider_call_id}")
+def call_by_provider(provider_call_id: str):
+    """A web call knows only Vapi's id; the row appears on its first webhook."""
+    return {"call_id": db.call_id_for_provider(provider_call_id)}
 
 
 # ----------------------------------------------------------------- webhook
@@ -409,10 +470,17 @@ async def _handle_tool_calls(call_id, message, background):
         args = (tc.get("function") or {}).get("arguments") or tc.get("arguments") or {}
 
         if name in ("send_details_now", "send_whatsapp_now"):
-            actions.dispatch(call_id, "whatsapp_hot", payload={"args": args},
-                             trigger_source="tool_call", background=background)
-            results.append({"toolCallId": tool_id,
-                            "result": "Sent. Tell them it is on its way to their WhatsApp now."})
+            if settings.whatsapp_enabled:
+                actions.dispatch(call_id, "whatsapp_hot", payload={"args": args},
+                                 trigger_source="tool_call", background=background)
+                said = "Sent. Tell them it is on its way to their WhatsApp now."
+            else:
+                # WhatsApp is off, so nothing is sent and the agent must not say it
+                # was. An assistant deployed before the tool was removed can still
+                # call it; the read itself still drives Slack and HubSpot.
+                said = ("Nothing is sent from this call. Tell them our team will put the "
+                        "details together, and offer a quick callback to walk them through it.")
+            results.append({"toolCallId": tool_id, "result": said})
         elif name == "schedule_callback":
             # Resolved synchronously and deterministically - it is milliseconds,
             # and the resolved time has to come back in THIS result so the agent
@@ -432,9 +500,17 @@ async def _handle_tool_calls(call_id, message, background):
             # the lead has the time in their hand and we have visible proof the
             # scheduler ran. Idempotent, so restating a time does not re-send.
             if spoken.startswith("Booked"):
-                actions.dispatch(call_id, "callback_confirm",
-                                 trigger_source="callback_booked",
-                                 background=background)
+                if settings.whatsapp_enabled:
+                    actions.dispatch(call_id, "callback_confirm",
+                                     trigger_source="callback_booked",
+                                     background=background)
+                # Calendar event, CRM stage and the team's Slack message all
+                # follow from the booking - in the background, after this result
+                # has already gone back to the agent.
+                booked = callfacts.active_callback(call_id)
+                if booked:
+                    integrations.on_callback_booked(call_id, booked["id"],
+                                                    background=background)
             results.append({"toolCallId": tool_id, "result": spoken})
         else:
             log.warning("unknown tool call %r on call %s", name, call_id)

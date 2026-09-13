@@ -21,6 +21,16 @@ CREATE TABLE IF NOT EXISTS calls (
     ended_reason      TEXT,
     recording_url     TEXT,
     summary           TEXT,
+    -- The multi-app layer's own duplicate guards: once an id is here, the next
+    -- sync updates that record instead of creating another.
+    hubspot_contact_id TEXT,
+    hubspot_deal_id    TEXT,
+    hubspot_deal_stage TEXT,                     -- only ever moves forward
+    hubspot_note_id    TEXT,
+    slack_channel      TEXT,
+    slack_ts           TEXT,                     -- set = edit the message, never re-post
+    gcal_event_id      TEXT,
+    gcal_event_link    TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
 );
@@ -106,6 +116,7 @@ CREATE TABLE IF NOT EXISTS callbacks (
     status          TEXT NOT NULL,               -- pending|claimed|placed|failed|cancelled
     confirmed_aloud INTEGER NOT NULL DEFAULT 0,
     placed_call_id  TEXT REFERENCES calls(id),
+    availability    TEXT,                        -- free|busy_confirmed|unchecked|not_configured
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );

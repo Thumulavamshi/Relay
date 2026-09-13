@@ -28,8 +28,20 @@ os.environ["WHATSAPP_MIDCALL_PARAMS"] = "1"
 # Pinned so the provider in the real .env cannot change what these tests mean.
 # The free-form path is exercised explicitly further down by flipping it.
 os.environ["WHATSAPP_PROVIDER"] = "meta"
+# WhatsApp is off by default now. These sections test the send path itself, so
+# they switch it on; the WHATSAPP OFF section at the end checks the default.
+os.environ["WHATSAPP_ENABLED"] = "1"
 os.environ.setdefault("YOUR_NAME", "Test Sender")
 os.environ.setdefault("YOUR_MOBILE_NUMBER", "+910000000000")
+# The real .env now carries live Google, HubSpot and Slack credentials. Blank them
+# before settings load (load_env never overrides a variable that is already set),
+# so every section before MULTI-APP runs exactly as it did before those apps
+# existed - and the transports are faked below as well, so nothing in this file
+# can create a real calendar event, CRM record or Slack post.
+for _key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN",
+             "HUBSPOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_CHANNEL_ID",
+             "PUBLIC_BASE_URL", "SERVER_URL"):
+    os.environ[_key] = ""
 
 from fastapi.testclient import TestClient             # noqa: E402
 from app import actions, classifier, db, extraction, vapi, whatsapp  # noqa: E402
@@ -849,6 +861,322 @@ def main():
         second = db.claim_due_callback()
         check("due callback claimed once", first is not None and first["id"] == cb)
         check("second claim gets nothing", second is None)
+
+        print("\nMULTI-APP  (Calendar / HubSpot / Slack - transports faked, logic real)")
+        import re as _re
+        import time as _time
+        from datetime import datetime as _dt, timedelta as _td
+        from app import callfacts, gcal, hubspot, integrations, rest, slack
+
+        def eventually(cond, timeout=5.0):
+            """App handlers run on the server's loop in another thread; give them a moment."""
+            end = _time.time() + timeout
+            while _time.time() < end:
+                if cond():
+                    return True
+                _time.sleep(0.02)
+            return cond()
+
+        settings.google_client_id = "gid"
+        settings.google_client_secret = "gsecret"
+        settings.google_refresh_token = "grefresh"
+        settings.google_calendar_id = "primary"
+        settings.hubspot_token, settings.hubspot_portal_id = "pat-test", "999"
+        settings.hubspot_stage_hot, settings.hubspot_stage_warm = "STAGE_HOT", "STAGE_WARM"
+        settings.slack_bot_token, settings.slack_channel_id = "xoxb-test", "C0TEST"
+        settings.public_base_url = "https://relay.test"
+
+        BUSY, EVENTS, FREEBUSY_DOWN = [], {}, [False]
+
+        def fake_google(method, url, body=None, form=None, timeout=10, auth=True):
+            if url.endswith("/freeBusy"):
+                if FREEBUSY_DOWN[0]:
+                    raise rest.ApiError("google", 0, "timed out after 0.8s")
+                return {"calendars": {"primary": {"busy": [
+                    {"start": s.isoformat(), "end": e.isoformat()} for s, e in BUSY]}}}
+            if method == "POST" and url.endswith("/events"):
+                if body["id"] in EVENTS:
+                    raise rest.ApiError("google", 409, "The requested identifier already exists.")
+                EVENTS[body["id"]] = body
+            elif method == "PUT":
+                EVENTS[body["id"]] = body
+            else:
+                raise AssertionError(f"unexpected Google call {method} {url}")
+            return {"id": body["id"], "htmlLink": "https://calendar.test/" + body["id"]}
+
+        HS = {"contacts": {}, "deals": {}, "notes": {}}
+
+        def fake_hubspot(method, path, body=None, timeout=15):
+            if path.startswith("/account-info"):
+                return {"portalId": 999, "uiDomain": "app-na2.hubspot.com"}
+            if path == "/crm/v3/objects/contacts/search":
+                phone = body["filterGroups"][0]["filters"][0]["value"]
+                hits = [{"id": i, "properties": p} for i, p in HS["contacts"].items()
+                        if p.get("phone") == phone]
+                return {"total": len(hits), "results": hits[:1]}
+            m = _re.match(r"/crm/v3/objects/(contacts|deals|notes)(?:/([^/?]+))?", path)
+            kind, rid = m.group(1), m.group(2)
+            if method == "POST":
+                rid = f"{kind}-{len(HS[kind]) + 1}"
+                HS[kind][rid] = dict(body["properties"], associations=body.get("associations"))
+            elif method == "PATCH":
+                HS[kind][rid].update(body["properties"])
+            elif method != "GET":
+                raise AssertionError(f"unexpected HubSpot call {method} {path}")
+            return {"id": rid, "properties": HS[kind][rid]}
+
+        SLACK = {"posts": [], "updates": []}
+
+        def fake_slack(method, body, form=False, timeout=10):
+            if method == "chat.postMessage":
+                ts = f"1700000000.{len(SLACK['posts']) + 1:06d}"
+                SLACK["posts"].append(dict(body, ts=ts))
+                return {"ok": True, "ts": ts, "channel": body["channel"]}
+            if method == "chat.update":
+                SLACK["updates"].append(body)
+                return {"ok": True, "ts": body["ts"], "channel": body["channel"]}
+            raise AssertionError(f"unexpected Slack call {method}")
+
+        gcal._request, hubspot._request, slack._request = fake_google, fake_hubspot, fake_slack
+        hubspot._UI["domain"] = None
+
+        def top_posts():
+            return [p for p in SLACK["posts"] if "thread_ts" not in p]
+
+        def say(prov, role, text):
+            webhook(client, {"type": "transcript", "transcriptType": "final", "role": role,
+                             "transcript": text, "call": {"id": prov}})
+
+        def book_via_tool(prov, when, tool_id):
+            r = webhook(client, {"type": "tool-calls", "call": {"id": prov}, "toolCallList": [
+                {"id": tool_id, "function": {"name": "schedule_callback",
+                                             "arguments": {"when": when}}}]})
+            return r.json()["results"][0]["result"]
+
+        h = client.get("/health").json()
+        check("/health reports all three apps as configured",
+              all(h["integrations"][a]["configured"]
+                  for a in ("google_calendar", "hubspot", "slack")), h.get("integrations"))
+
+        # --- a hot lead, mid-call
+        PLACED.clear()
+        callM = client.post("/calls").json()["call_id"]
+        provM = db.get_call(callM)["provider_call_id"]
+        EXTRACTED[0] = slots(products=("groceries", "We sell groceries"),
+                             catalogue_size=("around 200 products", "around 200 products"))
+        say(provM, "assistant", "What do you sell?")
+        say(provM, "user", "We sell groceries, around 200 products. Send me the details.")
+        check("a hot read creates the HubSpot contact",
+              eventually(lambda: len(HS["contacts"]) == 1), HS["contacts"])
+        check("and a deal at the HOT stage, associated with that contact",
+              eventually(lambda: db.get_call(callM)["hubspot_deal_stage"] == "STAGE_HOT")
+              and len(HS["deals"]) == 1
+              and list(HS["deals"].values())[0]["associations"][0]["to"]["id"]
+              == db.get_call(callM)["hubspot_contact_id"], HS["deals"])
+        check("the sales team is alerted in Slack while the call is live",
+              eventually(lambda: len(top_posts()) == 1)
+              and "on the line now" in top_posts()[0]["text"], SLACK["posts"])
+
+        say(provM, "user", "Send me the details.")
+        _time.sleep(0.3)
+        check("a repeated hot read makes no second deal and no second post",
+              len(HS["deals"]) == 1 and len(top_posts()) == 1,
+              (len(HS["deals"]), len(top_posts())))
+
+        # --- a callback on a free slot
+        said = book_via_tool(provM, "tomorrow at 4", "m-cb1")
+        check("a free slot is booked and said back", said.startswith("Booked"), said)
+        check("the calendar check is recorded on the booking",
+              (callfacts.active_callback(callM) or {}).get("availability") == "free",
+              callfacts.active_callback(callM))
+        check("the calendar event is created from the booking",
+              eventually(lambda: bool(db.get_call(callM)["gcal_event_link"]))
+              and len(EVENTS) == 1, list(EVENTS))
+        eid = db.get_call(callM)["gcal_event_id"]
+        check("the event id uses only Google's base32hex alphabet",
+              bool(_re.fullmatch(r"[0-9a-v]{5,1024}", eid or "")), eid)
+        check("the event sits at the resolved IST time",
+              list(EVENTS.values())[0]["start"]["dateTime"].endswith("T16:00:00+05:30"),
+              list(EVENTS.values())[0]["start"])
+        check("the Slack message gains the callback by EDIT, not a new post",
+              eventually(lambda: any("Callback" in json.dumps(u["blocks"])
+                                     for u in SLACK["updates"]))
+              and len(top_posts()) == 1, len(top_posts()))
+
+        said = book_via_tool(provM, "tomorrow at 5", "m-cb2")
+        check("restating the time MOVES the one event, never adds a second",
+              eventually(lambda: list(EVENTS.values())[0]["start"]["dateTime"]
+                         .endswith("T17:00:00+05:30")) and len(EVENTS) == 1,
+              [e["start"] for e in EVENTS.values()])
+        check("and a callback sync never moves a hot deal backwards",
+              db.get_call(callM)["hubspot_deal_stage"] == "STAGE_HOT")
+
+        # --- escalation
+        say(provM, "user", "Actually, can I speak to a real person about this?")
+        check("asking for a human pages the team with a threaded, broadcast reply",
+              eventually(lambda: any(p.get("thread_ts") and p.get("reply_broadcast")
+                                     for p in SLACK["posts"])), SLACK["posts"])
+        say(provM, "user", "I really want to talk to a human.")
+        _time.sleep(0.3)
+        check("and pages only once per call",
+              sum(1 for p in SLACK["posts"] if p.get("thread_ts")) == 1)
+
+        # --- call end
+        end_report = {"type": "end-of-call-report", "endedReason": "customer-ended-call",
+                      "call": {"id": provM}, "summary": "Grocer, wants a store in a month.",
+                      "artifact": {"messages": []}}
+        webhook(client, end_report)
+        check("call end writes ONE HubSpot note",
+              eventually(lambda: len(HS["notes"]) == 1), HS["notes"])
+        note = next(iter(HS["notes"].values()), {})
+        assoc_types = sorted(a["types"][0]["associationTypeId"]
+                             for a in note.get("associations") or [])
+        check("the note is associated with the contact (202) and the deal (214)",
+              assoc_types == [202, 214], assoc_types)
+        check("the note quotes the lead verbatim",
+              "We sell groceries" in note.get("hs_note_body", ""),
+              note.get("hs_note_body", "")[:200])
+        check("the Slack message now says the call ended - edited, not re-posted",
+              eventually(lambda: bool(SLACK["updates"])
+                         and "Call ended" in SLACK["updates"][-1]["text"])
+              and len(top_posts()) == 1, len(top_posts()))
+        webhook(client, end_report)
+        _time.sleep(0.3)
+        check("replaying the end of call adds no second note and no second post",
+              len(HS["notes"]) == 1 and len(top_posts()) == 1,
+              (len(HS["notes"]), len(top_posts())))
+
+        # --- a warm lead: taken slot, contact reuse, stage only moves forward
+        PLACED.clear()
+        callW = client.post("/calls").json()["call_id"]
+        provW = db.get_call(callW)["provider_call_id"]
+        four = (_dt.now(db.IST) + _td(days=1)).replace(hour=16, minute=0, second=0,
+                                                       microsecond=0)
+        BUSY.append((four, four + _td(hours=1)))
+        db.add_classification(callW, "warm", barrier="timing")
+        integrations.on_classified(callW)
+        check("a warm read with no callback is contact-only - no deal",
+              bool(db.get_call(callW)["hubspot_contact_id"])
+              and not db.get_call(callW)["hubspot_deal_id"], db.get_call(callW))
+        check("the same phone reuses the existing contact instead of duplicating it",
+              len(HS["contacts"]) == 1, HS["contacts"])
+
+        said = book_via_tool(provW, "tomorrow at 4", "w-1")
+        check("a taken slot is NOT booked",
+              said.startswith("Not booked") and callfacts.active_callback(callW) is None, said)
+        check("and the agent is handed the next free slot to offer", "17:00" in said, said)
+        said = book_via_tool(provW, "tomorrow at 5", "w-2")
+        check("accepting the offered slot books it",
+              said.startswith("Booked")
+              and (callfacts.active_callback(callW) or {}).get("availability") == "free", said)
+        check("warm + a booked callback earns a deal at the WARM stage",
+              eventually(lambda: db.get_call(callW)["hubspot_deal_stage"] == "STAGE_WARM"),
+              db.get_call(callW))
+        said = book_via_tool(provW, "tomorrow at 4", "w-3")
+        check("insisting on the taken slot books it, flagged as such",
+              said.startswith("Booked")
+              and (callfacts.active_callback(callW) or {}).get("availability") == "busy_confirmed",
+              said)
+
+        db.add_classification(callW, "hot")
+        integrations.on_classified(callW)
+        check("a later hot read moves the deal forward",
+              db.get_call(callW)["hubspot_deal_stage"] == "STAGE_HOT", db.get_call(callW))
+        db.add_classification(callW, "warm", barrier="budget")
+        hubspot.sync_call(callW)
+        deal = HS["deals"][db.get_call(callW)["hubspot_deal_id"]]
+        check("and a cooler read never moves it back",
+              db.get_call(callW)["hubspot_deal_stage"] == "STAGE_HOT"
+              and deal["dealstage"] == "STAGE_HOT", deal)
+
+        # --- the calendar does not answer
+        FREEBUSY_DOWN[0] = True
+        PLACED.clear()
+        callU = client.post("/calls").json()["call_id"]
+        said = book_via_tool(db.get_call(callU)["provider_call_id"], "tomorrow at 11", "u-1")
+        check("a calendar that does not answer never blocks the booking",
+              said.startswith("Booked")
+              and (callfacts.active_callback(callU) or {}).get("availability") == "unchecked",
+              said)
+        FREEBUSY_DOWN[0] = False
+
+        print("\nGROQ  (strict JSON schema - transport faked)")
+        for model in (classifier.LeadRead, extraction.ExtractedSlots):
+            schema = classifier.strict_schema(model)
+            objects = []
+
+            def walk(node):
+                if isinstance(node, dict):
+                    if node.get("type") == "object":
+                        objects.append(node)
+                    for v in node.values():
+                        walk(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        walk(v)
+
+            walk(schema)
+            flat = json.dumps(schema)
+            check(f"{model.__name__}: no $ref or $defs left for strict mode",
+                  "$ref" not in flat and "$defs" not in flat, flat[:160])
+            check(f"{model.__name__}: every object closed and fully required",
+                  bool(objects) and all(o["additionalProperties"] is False
+                                        and set(o["required"]) == set(o["properties"])
+                                        for o in objects), flat[:160])
+
+        GROQ_SENT = []
+        classifier._groq_request = lambda payload: GROQ_SENT.append(payload) or {"choices": [{
+            "finish_reason": "stop", "message": {"content": json.dumps({
+                "label": "warm", "confidence": 0.7, "barrier": "decision_maker",
+                "evidence_quote": "my brother decides", "reasoning": "defers"})}}]}
+        got = classifier._call_groq("sys", "user", "openai/gpt-oss-20b", classifier.LeadRead, 300)
+        sent = GROQ_SENT[-1]
+        check("Groq is asked for strict json_schema output",
+              sent["response_format"]["type"] == "json_schema"
+              and sent["response_format"]["json_schema"]["strict"] is True,
+              sent["response_format"].get("type"))
+        check("the reasoning budget is added on top of the answer budget",
+              sent["max_completion_tokens"] > 300, sent.get("max_completion_tokens"))
+        check("and the reply comes back as the validated model",
+              isinstance(got, classifier.LeadRead) and got.barrier == "decision_maker", got)
+
+        print("\nNO CALLING HOURS  (the lead picks the time)")
+        night = (_dt.now(db.IST) + _td(days=1)).replace(hour=23, minute=0, second=0,
+                                                        microsecond=0)
+        alt = gcal.next_free(night, [(night, night + _td(hours=2))])
+        check("the next free slot is not limited to calling hours",
+              alt == night + _td(hours=2), alt)
+
+        print("\nWHATSAPP OFF  (the default: the agent never promises the lead a message)")
+        settings.whatsapp_enabled = False
+        try:
+            PLACED.clear()
+            callO = client.post("/calls").json()["call_id"]
+            provO = db.get_call(callO)["provider_call_id"]
+            r = webhook(client, {"type": "tool-calls", "call": {"id": provO}, "toolCallList": [
+                {"id": "o-1", "function": {"name": "send_details_now", "arguments": {}}}]})
+            said = r.json()["results"][0]["result"]
+            check("a stale send_details_now call is answered without claiming a send",
+                  "WhatsApp" not in said and said.startswith("Nothing is sent"), said)
+            say(provO, "user", "We sell sarees, lots of designs. Send me the details.")
+            say(provO, "assistant", "I've sent the details to your WhatsApp now.")
+            said = book_via_tool(provO, "tomorrow at 1 am", "o-2")
+            check("a 1 am callback is booked with no calling-hours objection",
+                  said.startswith("Booked") and "hours" not in said, said)
+            webhook(client, {"type": "end-of-call-report", "endedReason": "customer-ended-call",
+                             "call": {"id": provO}, "artifact": {"messages": [
+                                 {"role": "user", "message": "We sell sarees, lots of designs."},
+                                 {"role": "user", "message": "Send me the details please."}]}})
+            _time.sleep(0.3)
+            sent_wa = [a["type"] for a in db.get_actions(callO)
+                       if a["type"].startswith("whatsapp") or a["type"] == "callback_confirm"]
+            check("no WhatsApp of any kind fires: hot read, claimed send, booking, call end",
+                  sent_wa == [], sent_wa)
+            check("while Slack and HubSpot still act on the hot read",
+                  eventually(lambda: bool(db.get_call(callO)["hubspot_deal_id"])
+                             and bool(db.get_call(callO)["slack_ts"])), db.get_call(callO))
+        finally:
+            settings.whatsapp_enabled = True
 
     print("\n" + "=" * 46)
     print(f"{PASS} passed, {FAIL} failed")
