@@ -1,6 +1,6 @@
 # Relay — an AI sales agent that works inside your team's apps
 
-Relay phones a lead, holds a real sales conversation in **English, Hindi or Telugu**, works out how
+Relay phones a lead, holds a real sales conversation, works out how
 serious the buyer is, and does the sales team's follow-up work **while the call is still live**:
 it checks the rep's **Google Calendar** before booking a callback, keeps **HubSpot** up to date, and
 alerts the team in **Slack** — each action exactly once, with proof.
@@ -22,8 +22,8 @@ Lemma × Comma Capital Multi-App Agent Hackathon.*
 1. **Calls by itself.** One button on the dashboard rings the configured number, or starts a **web
    call** in the browser (same agent, same tools, no phone line). A booked callback re-dials on its
    own at the agreed time, and opens by referring to the last conversation.
-2. **Speaks the lead's language.** Opens in English; if they answer in Hindi or Telugu it switches
-   and stays there, and it copes with code-mixed sentences.
+2. **Holds a natural conversation.** Stops the moment it is interrupted, waits through a pause
+   instead of talking over it, and reads through messy, real-world speech.
 3. **Runs discovery** — what they sell, catalogue size, timeline, features, budget — in a natural
    order, never re-asking what was already volunteered.
 4. **Reads intent** as Hot / Warm / Cold from indirect answers, continuously, without slowing the
@@ -63,10 +63,10 @@ The agent never sends the lead anything and never says it has. WhatsApp to the l
 
 | | Result |
 |---|---|
-| **Multi-app replay against the real apps** | **54/54** — 3 scenarios (hot, warm Hindi-English with a taken slot, cold), each replayed twice through Google Calendar, HubSpot and Slack, and verified by asking each app. Replays created no second event, deal, note or Slack message |
+| **Multi-app replay against the real apps** | **54/54** — 3 scenarios (hot, warm with a taken slot, cold), each replayed twice through Google Calendar, HubSpot and Slack, and verified by asking each app. Replays created no second event, deal, note or Slack message |
 | Offline backend suite | **175 assertions**, every transport faked, no network, no spend |
-| Intent classification | **97%** (57/59) on Groq `gpt-oss-20b` · **4/4** on the brief's own example phrases · Hindi 4/4, Telugu 3/4, code-mixed 5/5 · rules layer 59/59 |
-| Callback time resolution | **57/57** spoken phrasings in English, Hindi and Telugu, against a frozen clock |
+| Intent classification | **97%** (57/59) on Groq `gpt-oss-20b` · **4/4** on the brief's own example phrases · rules layer 59/59 |
+| Callback time resolution | **57/57** spoken phrasings, vague ("tomorrow morning") and exact, against a frozen clock |
 | Slot extraction | 30 slots over 7 real calls, 29 verbatim-quoted, 0 quote-integrity violations *(measured on the earlier Claude understanding lane)* |
 | Turn latency | median 1.7 s, 0 of 9 turns over 3 s *(Vapi's own metrics, pre-hackathon calls)* |
 
@@ -87,7 +87,7 @@ the Calendar, HubSpot and Slack work happens.
         ▼
       Vapi ──SIP──► Telnyx ──► the lead's phone        (or the browser, for a web call)
         │
-        │  Soniox STT (en/hi/te) ─► gpt-4.1 ─► Cartesia TTS            SPEECH LANE
+        │  Soniox STT ─► gpt-4.1 ─► Cartesia TTS                       SPEECH LANE
         │
         │  webhooks: transcript · tool calls · status · end-of-call
         ▼
@@ -124,9 +124,9 @@ a network retry after a success whose response never arrived:
 |---|---|---|
 | Voice orchestration | **Vapi** | Barge-in, endpointing, tool calls and webhooks as configuration |
 | Telephony | **Telnyx**, bring-your-own SIP trunk | Direct RTP to Vapi; the voice-API relay dropped caller audio |
-| Speech-to-text | **Soniox** `stt-rt-v5`, constrained to en/hi/te | The only option tested that does Telugu *and* code-switching |
-| Conversation model | **OpenAI `gpt-4.1`** via Vapi | Instruction-following across a long multilingual prompt |
-| Text-to-speech | **Cartesia** `sonic-3.5`, one native Telugu voice | One speaker identity across all three languages |
+| Speech-to-text | **Soniox** `stt-rt-v5`, real-time streaming | Low-latency transcripts on phone-quality audio |
+| Conversation model | **OpenAI `gpt-4.1`** via Vapi | Reliable instruction-following across a long behavioural prompt |
+| Text-to-speech | **Cartesia** `sonic-3.5` | A natural voice with low time-to-first-audio |
 | Understanding lane | **Groq `openai/gpt-oss-20b`**, strict JSON schema | 97% on the labelled set; fast; schema-valid output guaranteed |
 | Backend | **FastAPI** + **SQLite** (stdlib `sqlite3`) | Async webhook ingress; no ORM, no migration tool |
 | App integrations | Stdlib `urllib`, no SDKs | Google, HubSpot, Slack and Groq all fail the same way, into the ledger |
@@ -350,7 +350,7 @@ python backend/smoke_test.py
 ```bash
 python backend/eval_timeparse.py
 ```
-57 spoken callback times in English, Hindi and Telugu against a frozen clock.
+57 spoken callback times, vague and exact, against a frozen clock.
 
 ```bash
 python backend/eval_classifier.py
@@ -375,7 +375,7 @@ The full Hot / Warm / Cold pipeline on the 59 cases (uses Groq tokens).
 python backend/replay_harness.py --model scripted
 ```
 
-Replays three calls — hot (English), warm Hindi-English asking for a slot the harness has blocked,
+Replays three calls — hot, warm (asking for a slot the harness has blocked),
 and cold — **twice each** through the real FastAPI app and the real Google Calendar, HubSpot and
 Slack. Then it asks each app, not our database, whether the right thing exists: the event at the
 booked IST time, exactly one event per call, the deal at the stage the read earned (or no deal),
@@ -494,14 +494,14 @@ backend/
     understanding.py   the understanding lane: extraction + classification per turn, call end
     classifier.py      Hot/Warm/Cold: rules overlay + model (Groq / Anthropic / Gemini)
     extraction.py      the five discovery facts, each quote verified against the transcript
-    timeparse.py       spoken time -> IST datetime, deterministic, en/hi/te
+    timeparse.py       spoken time -> IST datetime, deterministic
     callbacks.py       calendar-checked booking; the worker that re-dials at the booked time
     actions.py         the idempotent action bus: ledger, background runs, retries
     integrations.py    when each app acts, and the app handlers on the bus
     gcal.py            Google Calendar: freeBusy, next free slot, one event per call
     hubspot.py         HubSpot: contact by phone, forward-only deal stages, one note per call
     slack.py           Slack: one message per call, edited in place; escalations
-    escalation.py      "speak to a person", disputes, distress - en/hi/te rules
+    escalation.py      "speak to a person", disputes, distress - deterministic rules
     callfacts.py       one read of a call, shared by Calendar, HubSpot and Slack
     views.py           read models for the dashboard; carrier-fault flags
     reconcile.py       finishes calls whose end-of-call webhook never arrived
@@ -523,12 +523,9 @@ Groq, Google, HubSpot and Slack are reached over the standard library.
 
 | Read this | For |
 |---|---|
-| [HACKATHON_PLAN.md](HACKATHON_PLAN.md) | The multi-app plan: the three apps, reliability, proof, demo, cut lines |
-| [docs/demo-video-script.md](docs/demo-video-script.md) | The two-minute demo, shot by shot |
 | [docs/system-design.md](docs/system-design.md) | Architecture, call flow, data model, every choice and its rejected alternatives |
 | [docs/requirements-analysis.md](docs/requirements-analysis.md) | Requirements normalised, open questions, requirement-to-test matrix |
 | [docs/audit.md](docs/audit.md) | A critical review of the original plan |
 | [docs/g10-provider-inventory.md](docs/g10-provider-inventory.md) | Why Soniox; where vendor docs were wrong and the live API corrected them |
 | [docs/model-comparison.md](docs/model-comparison.md) | Classification model choice and pricing |
 | [docs/live-test-runbook.md](docs/live-test-runbook.md) · [docs/deployment.md](docs/deployment.md) | Live testing; hosting on Render |
-| [NOTE.md](NOTE.md) | The original short note: what works, what doesn't, what next |
