@@ -86,7 +86,9 @@ transient failures, and leaves a ledger entry saying what fired and why
 | **HubSpot** | each change of read, a booked callback, call end | contact by phone · Hot → deal at the hot stage · Warm + callback → warm stage · Cold → contact only · one note with verbatim quotes | ids on the call row; a known contact reused before searching; a deal stage only moves forward |
 | **Slack** | Hot mid-call, callback booked, CRM record written, call end | one message per call, edited in place. "Speak to a person", a dispute or distress → a threaded reply broadcast to the channel | message `ts` on the call row: update, never re-post |
 
-WhatsApp remains the only lead-facing channel and is not counted among the apps.
+WhatsApp to the lead is switched off by default (`WHATSAPP_ENABLED=1` brings the whole send path
+back), and the agent never promises the lead a message. There are no calling hours: the lead picks
+the callback time, and the calendar only decides whether that slot is free.
 
 The web UI at `/` starts a web or phone call, shows the live transcript, the intent timeline and
 a deep link into every app action, flags carrier audio faults, checks each integration live, and

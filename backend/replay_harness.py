@@ -87,7 +87,6 @@ SCENARIOS = [
             ("assistant", "And roughly what budget do you have in mind?"),
             ("user", "Around fifty thousand rupees. Send me the details on WhatsApp."),
         ],
-        "send_details": True,
         "callback": "tomorrow at 4",
         "closing": [("user", "Tomorrow at four works for me."),
                     ("assistant", "Perfect, I'll call you then.")],

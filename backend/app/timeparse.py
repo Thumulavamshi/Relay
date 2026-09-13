@@ -39,12 +39,6 @@ NEXT_WEEK_WEEKDAY = 0        # Monday
 # "call me after six" -> 18:30, not 18:00. They said *after*.
 AFTER_MINUTES = 30
 
-# Our calling window (OQ-05). Not enforced - a resolution outside it is still
-# booked and still spoken aloud, because contradicting what the lead just asked
-# for would sound worse than a slightly awkward hour. Recorded so the agent and
-# the call page can both see it.
-WINDOW = (10, 19)
-
 
 # --- vocabulary ------------------------------------------------------------
 #
@@ -116,10 +110,6 @@ class Resolution:
     def when_utc(self):
         """ISO-8601 UTC, the only form that is ever stored."""
         return self.when_ist.astimezone(timezone.utc).isoformat(timespec="seconds")
-
-    @property
-    def in_window(self):
-        return WINDOW[0] <= self.when_ist.hour < WINDOW[1]
 
     def spoken(self):
         """How the agent says it back. This sentence is the scored artefact -

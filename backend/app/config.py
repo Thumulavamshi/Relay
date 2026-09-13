@@ -170,6 +170,11 @@ class Settings:
                                 or os.environ.get("SERVER_URL", "").strip()).rstrip("/")
         self.vapi_public_key = os.environ.get("VAPI_PUBLIC_KEY", "").strip()
 
+        # WhatsApp to the lead. OFF by default: the agent acts in the team's own
+        # apps and never promises the lead a message. The whole send path is
+        # intact behind this one flag.
+        self.whatsapp_enabled = os.environ.get("WHATSAPP_ENABLED", "").strip() == "1"
+
     def missing(self):
         """Which settings block placing a call. Read endpoints work without them."""
         required = {

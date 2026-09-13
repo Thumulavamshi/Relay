@@ -909,7 +909,7 @@ def cmd_inspect():
 
     tool_ids = rm.get("toolIds") or []
     if not tool_ids:
-        print(f"    {BAD} model.toolIds is EMPTY - the agent has no way to send anything")
+        print(f"    {BAD} model.toolIds is EMPTY - the agent cannot book a callback")
         problems.append("toolIds")
     for tid in tool_ids:
         tool = request("GET", f"/tool/{tid}")
@@ -926,7 +926,7 @@ def cmd_inspect():
     if problems:
         print(f"  NOT READY for a mid-call test: {', '.join(problems)}")
         return 1
-    print("  READY: the mid-call WhatsApp can fire on this assistant.")
+    print("  READY: webhooks and tools are wired to this assistant.")
     return 0
 
 

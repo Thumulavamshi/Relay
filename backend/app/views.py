@@ -15,7 +15,6 @@ APP_ACTIONS = {
     "calendar": ("calendar_event",),
     "hubspot": ("crm_sync", "crm_note"),
     "slack": ("team_alert",),
-    "whatsapp": ("whatsapp_hot", "whatsapp_followup", "whatsapp_resume", "callback_confirm"),
 }
 
 # HACKATHON_PLAN.md, "Reliability": about 18% of calls delivered no caller audio

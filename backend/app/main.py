@@ -470,10 +470,17 @@ async def _handle_tool_calls(call_id, message, background):
         args = (tc.get("function") or {}).get("arguments") or tc.get("arguments") or {}
 
         if name in ("send_details_now", "send_whatsapp_now"):
-            actions.dispatch(call_id, "whatsapp_hot", payload={"args": args},
-                             trigger_source="tool_call", background=background)
-            results.append({"toolCallId": tool_id,
-                            "result": "Sent. Tell them it is on its way to their WhatsApp now."})
+            if settings.whatsapp_enabled:
+                actions.dispatch(call_id, "whatsapp_hot", payload={"args": args},
+                                 trigger_source="tool_call", background=background)
+                said = "Sent. Tell them it is on its way to their WhatsApp now."
+            else:
+                # WhatsApp is off, so nothing is sent and the agent must not say it
+                # was. An assistant deployed before the tool was removed can still
+                # call it; the read itself still drives Slack and HubSpot.
+                said = ("Nothing is sent from this call. Tell them our team will put the "
+                        "details together, and offer a quick callback to walk them through it.")
+            results.append({"toolCallId": tool_id, "result": said})
         elif name == "schedule_callback":
             # Resolved synchronously and deterministically - it is milliseconds,
             # and the resolved time has to come back in THIS result so the agent
@@ -493,9 +500,10 @@ async def _handle_tool_calls(call_id, message, background):
             # the lead has the time in their hand and we have visible proof the
             # scheduler ran. Idempotent, so restating a time does not re-send.
             if spoken.startswith("Booked"):
-                actions.dispatch(call_id, "callback_confirm",
-                                 trigger_source="callback_booked",
-                                 background=background)
+                if settings.whatsapp_enabled:
+                    actions.dispatch(call_id, "callback_confirm",
+                                     trigger_source="callback_booked",
+                                     background=background)
                 # Calendar event, CRM stage and the team's Slack message all
                 # follow from the booking - in the background, after this result
                 # has already gone back to the agent.

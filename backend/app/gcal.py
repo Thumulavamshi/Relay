@@ -31,7 +31,6 @@ from datetime import datetime, timedelta, timezone
 from . import callfacts, db, hubspot, rest
 from .config import settings
 from .db import IST
-from .timeparse import WINDOW
 
 log = logging.getLogger("elevatebox.gcal")
 
@@ -138,15 +137,15 @@ def _overlaps(blocks, start, end):
 
 
 def next_free(after, blocks, minutes=SLOT_MINUTES):
-    """First free slot strictly after `after`, on the half hour, inside our
-    calling window (timeparse.WINDOW). None if nothing fits in SEARCH_DAYS."""
+    """First free slot strictly after `after`, on the half hour. No calling-hours
+    rule: the lead picks the time, and the calendar only says whether it is free.
+    None if nothing fits in SEARCH_DAYS."""
     step, length = timedelta(minutes=30), timedelta(minutes=minutes)
     t = after.astimezone(IST).replace(second=0, microsecond=0)
     t = t - timedelta(minutes=t.minute % 30) + step
     horizon = after + timedelta(days=SEARCH_DAYS)
     while t < horizon:
-        closes = t.replace(hour=WINDOW[1], minute=0)
-        if t.hour >= WINDOW[0] and t + length <= closes and not _overlaps(blocks, t, t + length):
+        if not _overlaps(blocks, t, t + length):
             return t
         t += step
     return None

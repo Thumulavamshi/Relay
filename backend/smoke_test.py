@@ -28,6 +28,9 @@ os.environ["WHATSAPP_MIDCALL_PARAMS"] = "1"
 # Pinned so the provider in the real .env cannot change what these tests mean.
 # The free-form path is exercised explicitly further down by flipping it.
 os.environ["WHATSAPP_PROVIDER"] = "meta"
+# WhatsApp is off by default now. These sections test the send path itself, so
+# they switch it on; the WHATSAPP OFF section at the end checks the default.
+os.environ["WHATSAPP_ENABLED"] = "1"
 os.environ.setdefault("YOUR_NAME", "Test Sender")
 os.environ.setdefault("YOUR_MOBILE_NUMBER", "+910000000000")
 # The real .env now carries live Google, HubSpot and Slack credentials. Blank them
@@ -1136,6 +1139,44 @@ def main():
               sent["max_completion_tokens"] > 300, sent.get("max_completion_tokens"))
         check("and the reply comes back as the validated model",
               isinstance(got, classifier.LeadRead) and got.barrier == "decision_maker", got)
+
+        print("\nNO CALLING HOURS  (the lead picks the time)")
+        night = (_dt.now(db.IST) + _td(days=1)).replace(hour=23, minute=0, second=0,
+                                                        microsecond=0)
+        alt = gcal.next_free(night, [(night, night + _td(hours=2))])
+        check("the next free slot is not limited to calling hours",
+              alt == night + _td(hours=2), alt)
+
+        print("\nWHATSAPP OFF  (the default: the agent never promises the lead a message)")
+        settings.whatsapp_enabled = False
+        try:
+            PLACED.clear()
+            callO = client.post("/calls").json()["call_id"]
+            provO = db.get_call(callO)["provider_call_id"]
+            r = webhook(client, {"type": "tool-calls", "call": {"id": provO}, "toolCallList": [
+                {"id": "o-1", "function": {"name": "send_details_now", "arguments": {}}}]})
+            said = r.json()["results"][0]["result"]
+            check("a stale send_details_now call is answered without claiming a send",
+                  "WhatsApp" not in said and said.startswith("Nothing is sent"), said)
+            say(provO, "user", "We sell sarees, lots of designs. Send me the details.")
+            say(provO, "assistant", "I've sent the details to your WhatsApp now.")
+            said = book_via_tool(provO, "tomorrow at 1 am", "o-2")
+            check("a 1 am callback is booked with no calling-hours objection",
+                  said.startswith("Booked") and "hours" not in said, said)
+            webhook(client, {"type": "end-of-call-report", "endedReason": "customer-ended-call",
+                             "call": {"id": provO}, "artifact": {"messages": [
+                                 {"role": "user", "message": "We sell sarees, lots of designs."},
+                                 {"role": "user", "message": "Send me the details please."}]}})
+            _time.sleep(0.3)
+            sent_wa = [a["type"] for a in db.get_actions(callO)
+                       if a["type"].startswith("whatsapp") or a["type"] == "callback_confirm"]
+            check("no WhatsApp of any kind fires: hot read, claimed send, booking, call end",
+                  sent_wa == [], sent_wa)
+            check("while Slack and HubSpot still act on the hot read",
+                  eventually(lambda: bool(db.get_call(callO)["hubspot_deal_id"])
+                             and bool(db.get_call(callO)["slack_ts"])), db.get_call(callO))
+        finally:
+            settings.whatsapp_enabled = True
 
     print("\n" + "=" * 46)
     print(f"{PASS} passed, {FAIL} failed")

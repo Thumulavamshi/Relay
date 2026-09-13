@@ -77,7 +77,8 @@ async def on_turn(call_id, role, text, seq):
             # something without either having fired. Same idempotency key, so if
             # a real send already happened this is a no-op - it can only ever
             # turn a false claim into a true one.
-            if role == "assistant" and _CLAIMED_SEND.search(text or ""):
+            if (settings.whatsapp_enabled and role == "assistant"
+                    and _CLAIMED_SEND.search(text or "")):
                 if dispatch(call_id, "whatsapp_hot",
                             payload={"at_turn_seq": seq, "reason": "agent said it had sent"},
                             trigger_source="claimed_by_agent"):
@@ -147,6 +148,8 @@ async def on_call_ended(call_id):
                      call_id, len(lead_turns), lead_words)
             return
 
+        if not settings.whatsapp_enabled:
+            return
         # dispatch() is idempotent, so the reconciliation sweeper can call this
         # again safely.
         dispatch(call_id, "whatsapp_followup", trigger_source="post_call")
@@ -270,6 +273,8 @@ async def maybe_fire_mid_call_action(call_id, seq):
     tool call does not cost the 15-point row. Both paths share one idempotency
     key, so whichever is second is a no-op.
     """
+    if not settings.whatsapp_enabled:
+        return
     current = db.latest_classification(call_id)
     if not current or current["label"] != "hot":
         return

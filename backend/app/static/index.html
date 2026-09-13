@@ -126,7 +126,9 @@ const pill = label => label ? `<span class="pill ${esc(label)}">${esc(label)}</s
 const link = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 const statusText = s => s ? `<span class="s-${esc(s)}">${esc(s)}</span>` : '<span class="faint">waiting</span>';
 
-const APPS = [['calendar', 'Calendar'], ['hubspot', 'HubSpot'], ['slack', 'Slack'], ['whatsapp', 'WhatsApp']];
+const APPS = [['calendar', 'Calendar'], ['hubspot', 'HubSpot'], ['slack', 'Slack']];
+// Lead-facing WhatsApp is switched off; older calls may still carry these rows.
+const HIDDEN_ACTIONS = ['whatsapp_hot', 'whatsapp_followup', 'whatsapp_resume', 'whatsapp_brochure', 'callback_confirm'];
 const MARK = {sent: '✓', failed: '✕', sending: '…', pending: '…'};
 const FLAG = {suspected_no_audio: 'no caller audio', ringing_silently: 'silent ring?', escalation: 'needs a human'};
 
@@ -339,17 +341,8 @@ function appsHtml(d) {
     ? `one message, edited as the call moves${L.slack_channel ? ` · ${link(L.slack_channel, 'channel')}` : ''}`
     : '<span class="faint">not posted</span>';
 
-  const hot = d.actions.find(a => a.type === 'whatsapp_hot');
-  let wa = '<span class="faint">no mid-call message</span>';
-  if (hot) {
-    wa = `mid-call message ${statusText(hot.status)} <span class="faint">${clock(hot.sent_at || hot.requested_at)}</span>`;
-    if (hot.sent_at && c.ended_at && new Date(hot.sent_at) < new Date(c.ended_at)) {
-      const s = Math.round((new Date(c.ended_at) - new Date(hot.sent_at)) / 1000);
-      wa += `<div class="s-sent">delivered ${dur(s)} before hang-up</div>`;
-    }
-  }
   return [['Calendar', d.apps.calendar, cal], ['HubSpot', d.apps.hubspot, hub],
-          ['Slack', d.apps.slack, slack], ['WhatsApp', d.apps.whatsapp, wa]]
+          ['Slack', d.apps.slack, slack]]
     .map(([name, s, body]) => `<div class="app"><div><div class="name">${name}</div>
       <div style="font-size:.8rem">${statusText(s)}</div></div><div>${body}</div></div>`).join('');
 }
@@ -427,7 +420,7 @@ function callPage(id) {
       return `<div class="k">${label}</div><div>${body}</div>`;
     }).join('')}</div>`;
 
-    $('#ledger').innerHTML = d.actions.map(a => `<div class="item">
+    $('#ledger').innerHTML = d.actions.filter(a => !HIDDEN_ACTIONS.includes(a.type)).map(a => `<div class="item">
         <span class="faint">${clock(a.sent_at || a.requested_at)}</span>
         <span>${esc(a.type)} <span class="faint">· ${esc(a.trigger_source || '')}</span>
           ${a.error ? `<div class="s-failed" style="font-size:.8rem">${esc(a.error.split('\n')[0].slice(0, 160))}</div>` : ''}</span>
@@ -525,7 +518,6 @@ async function evidencePage() {
         <div class="k">Model</div><div>${esc(d.model)}</div>
         <div class="k">Scope</div><div>${d.runs} run × ${d.scenarios.length} scenarios, each replayed twice</div>
         <div class="k">Apps</div><div>${apps}</div>
-        <div class="k">Lead-facing</div><div>${d.lead_facing_sends_stubbed} WhatsApp sends stubbed — nothing reached a phone</div>
       </div></div></div>
     ${scenarios}${OFFLINE}`;
 }

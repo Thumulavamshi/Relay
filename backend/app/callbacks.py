@@ -114,17 +114,12 @@ def book(call_id, phrase, now=None):
     # "शाम के 8 बजे". A digit clock is much harder to paraphrase into a
     # different number, and the instruction below makes the rule explicit.
     exact = f"{resolution.when_ist:%H:%M on %A %d %B}"
-    warning = ""
-    if not resolution.in_window:
-        # Booked anyway - contradicting what they just asked for would sound
-        # worse than an awkward hour - but the agent gets told, so it can offer.
-        warning = (" That is outside our usual hours, so mention it and offer "
-                   "a time between 10 and 7 if they would rather.")
     # Kept SHORT on purpose. The model has to read this and speak before the
     # silence timer runs out, and a long instruction block slows that down. The
     # translate-not-the-numbers rule lives in prompt.md, where it costs nothing
-    # per call.
-    return f"Booked: {said} ({exact}). Say it back to confirm.{warning}"
+    # per call. No calling-hours caveat: the lead picks the time, and a warning
+    # appended here made the agent book a slot and then argue with it.
+    return f"Booked: {said} ({exact}). Say it back to confirm."
 
 
 # --------------------------------------------------------------- context
